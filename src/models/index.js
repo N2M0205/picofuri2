@@ -116,11 +116,39 @@ async function initDB() {
   await sequelize.query('PRAGMA journal_mode = WAL');
   await sequelize.query('PRAGMA busy_timeout = 5000');
 
-  await sequelize.sync({ alter: true });
+  // CrossmallSale は alter:true で inline UNIQUE バグを再注入されるため、bulk syncから外して個別管理
+  // Sequelize 6 + SQLite で indexes:[{unique:true, fields:['col1','col2']}] が
+  // 各カラムに NOT NULL UNIQUE を inline 付与してしまう既知バグへの対策
+  await Keyword.sync({ alter: true });
+  await DetectedItem.sync({ alter: true });
+  await CrossmallProduct.sync({ alter: true });
 
-  // CrossmallSale 複合UNIQUE保護
-  // Sequelize 6 SQLite の sync({alter:true}) は 2回目以降に複合UNIQUE制約を
-  // 削除する既知問題があるため、CREATE UNIQUE INDEX IF NOT EXISTS で冪等に再作成する
+  // CrossmallSale 専用処理: 存在しなければforce、存在すればバグ検査のみ
+  const [tableExists] = await sequelize.query(
+    "SELECT name FROM sqlite_master WHERE name='CrossmallSales' AND type='table'"
+  );
+  if (tableExists.length === 0) {
+    console.log('[DB] CrossmallSales を新規作成');
+    await CrossmallSale.sync({ force: true });
+  } else {
+    const [tblRows] = await sequelize.query(
+      "SELECT sql FROM sqlite_master WHERE name='CrossmallSales' AND type='table'"
+    );
+    const tableSql = tblRows[0]?.sql || '';
+    const hasInlineUniqueBug = /\b(orderNumber|lineNo)\b[^,)]*\bUNIQUE\b/.test(tableSql);
+    if (hasInlineUniqueBug) {
+      const [cntRows] = await sequelize.query('SELECT COUNT(*) AS n FROM CrossmallSales');
+      if (cntRows[0].n === 0) {
+        console.warn('[DB] CrossmallSales inline-UNIQUEバグ検知。空テーブルのため自動再作成');
+        await sequelize.query('DROP TABLE CrossmallSales');
+        await CrossmallSale.sync({ force: true });
+      } else {
+        console.error('[DB] CrossmallSales inline-UNIQUEバグ検知 + データあり。手動対応が必要');
+      }
+    }
+  }
+
+  // 複合UNIQUE保護インデックス（冪等）
   await sequelize.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crossmall_sales_order_line
     ON CrossmallSales (orderNumber, lineNo)

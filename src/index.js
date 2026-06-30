@@ -18,7 +18,12 @@ async function main() {
   const intervalSec = parseInt(process.env.SCRAPING_INTERVAL_SECONDS) || 60;
   console.log(`[Scheduler] スキャン間隔: ${intervalSec}秒`);
 
-  // 起動時に即1回スキャン
+  // 起動時に CROSSMALL 注文蓄積を1回実行（バックグラウンド、長時間ジョブ）
+  setTimeout(() => {
+    crossmall.syncOrders().catch(e => console.error('[起動時syncOrders] エラー:', e.message));
+  }, 10000);
+
+  // 起動時に即1回スキャン（CROSSMALL情報なしでも参考通知は出る）
   setTimeout(() => scraping.runScan(), 5000);
 
   // 定期スキャン（node-cron: 最小1分間隔。60秒未満はsetInterval）
@@ -28,7 +33,7 @@ async function main() {
     cron.schedule(`*/${Math.floor(intervalSec / 60)} * * * *`, () => scraping.runScan());
   }
 
-  // CROSSMALL同期（2時間ごと）
+  // CROSSMALL同期（2時間ごと: 注文蓄積 + 在庫 + 商品情報）
   cron.schedule('0 */2 * * *', () => crossmall.syncAll());
 
   const app = express();
