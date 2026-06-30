@@ -3,6 +3,7 @@ node_modules/
 database.sqlite
 database.sqlite-shm
 database.sqlite-wal
+database.sqlite.bak_*
 logs/
 *.log
 integration-test.log
