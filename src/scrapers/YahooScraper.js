@@ -86,10 +86,12 @@ class YahooScraper {
         return results;
       });
 
+      const listingCount = items.length;
       return items.map(item => ({
         ...item,
         listedAt: null,
-        platform: 'yahoo_flea'
+        platform: 'yahoo_flea',
+        listingCount: listingCount
       }));
 
     } catch (err) {

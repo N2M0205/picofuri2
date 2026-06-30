@@ -1,0 +1,6 @@
+{
+  "layer_a_min_hours": 0,
+  "layer_a_max_hours": 48,
+  "layer_a_min_expiry_months": 5,
+  "layer_a_skip_stock_days": 25
+}

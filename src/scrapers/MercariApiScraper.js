@@ -100,6 +100,7 @@ class MercariApiScraper {
       );
 
       const items = response.data.items || [];
+      const listingCount = parseInt(response.data.meta?.numFound) || null;
 
       return items.map(item => ({
         id: item.id,
@@ -111,7 +112,8 @@ class MercariApiScraper {
           ? new Date(parseInt(item.created) * 1000)
           : null,
         status: item.status,
-        platform: 'mercari'
+        platform: 'mercari',
+        listingCount: listingCount
       }));
 
     } catch (err) {
