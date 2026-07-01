@@ -296,6 +296,26 @@ TELEGRAM_ADMIN_ID=8656466812
 
 ---
 
+## ⚠️ 既知の潜在バグ（未発現・要注意）
+
+### CrossmallService._generateSigning のソート順
+
+現行実装は ASCII 昇順ソート（大文字が小文字より先）でパラメータをソートしている。
+CROSSMALLサーバは大文字小文字を無視したソートで署名検証しているとみられる。
+
+現在は本番で使用するパラメータキーがすべて小文字
+（account, item_code, order_date_fr, order_number, sku_code, jan_code 等）のため
+両ソート方式で結果が一致し、問題は顕在化していない。
+
+**将来、大文字を含むパラメータ名（例: get_diff_stock の PascalCase候補）を
+使う場合、署名が壊れる可能性がある。** その場合は `_generateSigning` のソートを
+大文字小文字無視（`localeCompare` の `caseFirst` オプション、または両方を
+`toLowerCase` してからソート）に変更すること。
+
+発見日: 2026-07-01（get_diff_stock パラメータ探索調査時）
+
+---
+
 ## ⚠️ 運用上の注意
 
 ### DetectedItem の全削除は禁止
