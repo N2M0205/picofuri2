@@ -15,10 +15,6 @@ class ScrapingService {
     this.isRunning = false;
     this.lastRunAt = null;
     this.stats = { success: 0, error: 0, notified: 0, filtered: 0, capped: 0 };
-    // 1スキャンあたりの通知上限（スパム防止・env で外部化）
-    // 0 or 未設定なら無制限
-    this._perScanNotifyCount = 0;
-    this._capHitLogged = false;
   }
 
   async initialize() {
@@ -52,9 +48,12 @@ class ScrapingService {
     const startTime = Date.now();
     console.log(`[ScrapingService] スキャン開始: ${new Date().toLocaleString('ja-JP')}`);
 
-    // per-scan 通知カウンタをリセット（env はスキャン毎に読み直し、pm2 restart --update-env 反映を早める）
-    this._perScanNotifyCount = 0;
-    this._capHitLogged = false;
+    // per-scan 状態はローカル変数に閉じ込めて、インスタンス変数のリセット漏れを構造的に排除する。
+    // _processItems は並列実行されるためリアルタイムでカウンタ共有が必要 →
+    // オブジェクトで包んで参照渡し（返り値集計だと並列中のキャップ判定に間に合わない）。
+    // env はスキャン毎に読み直し、pm2 restart --update-env 反映を早める。
+    const scanState = { notifyCount: 0, cappedCount: 0, capHitLogged: false };
+    const cap = parseInt(process.env.NOTIFY_CAP_PER_SCAN) || 0;
 
     try {
       const keywords = await Keyword.findAll({ where: { isActive: true } });
@@ -66,13 +65,13 @@ class ScrapingService {
 
       const mercariTasks = mercariKeywords.map(kw => async () => {
         const items = await this.mercariScraper.search(kw.keyword);
-        await this._processItems(items, kw);
+        await this._processItems(items, kw, scanState, cap);
         return items.length;
       });
 
       const yahooTasks = yahooKeywords.map(kw => async () => {
         const items = await this.yahooScraper.search(kw.keyword);
-        await this._processItems(items, kw);
+        await this._processItems(items, kw, scanState, cap);
         return items.length;
       });
 
@@ -82,7 +81,7 @@ class ScrapingService {
       ]);
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const capMsg = this._capHitLogged ? ` / キャップ抑制: ${this.stats.capped}件` : '';
+      const capMsg = scanState.capHitLogged ? ` / キャップ抑制: ${scanState.cappedCount}件` : '';
       console.log(`[ScrapingService] スキャン完了: ${elapsed}秒 / 通知: ${this.stats.notified}件 / フィルタ除外: ${this.stats.filtered}件${capMsg}`);
       this.lastRunAt = new Date();
 
@@ -93,7 +92,7 @@ class ScrapingService {
     }
   }
 
-  async _processItems(items, keyword) {
+  async _processItems(items, keyword, scanState, cap) {
     // 当該キーワードに紐づく CrossmallProduct を事前取得
     let product = null;
     if (keyword.crossmallItemCode) {
@@ -153,12 +152,12 @@ class ScrapingService {
       //    DetectedItem は既に notified=false で登録済み。
       //    キャップ超過分は notified=false のまま残す → 次回スキャンで既存判定に引っかかるので
       //    通知は永遠に来ないが、スパム防止を優先する仕様
-      const cap = parseInt(process.env.NOTIFY_CAP_PER_SCAN) || 0;
-      if (cap > 0 && this._perScanNotifyCount >= cap) {
-        if (!this._capHitLogged) {
+      if (cap > 0 && scanState.notifyCount >= cap) {
+        if (!scanState.capHitLogged) {
           console.log(`[ScrapingService] 通知キャップ到達（${cap}件）残りの通知をスキップ`);
-          this._capHitLogged = true;
+          scanState.capHitLogged = true;
         }
+        scanState.cappedCount++;
         this.stats.capped++;
         continue;
       }
@@ -166,7 +165,7 @@ class ScrapingService {
       // 7. 通知（NotificationServiceがLINE/Telegramを内部で判定）
       await this.notification.notifyNewItem(item, keyword, product);
       await detected.update({ notified: true, notifiedAt: new Date() });
-      this._perScanNotifyCount++;
+      scanState.notifyCount++;
       this.stats.notified++;
     }
   }
