@@ -8,6 +8,10 @@ class CrossmallService {
     this.apiUrl = process.env.CROSSMALL_API_URL;
     this.account = process.env.CROSSMALL_ACCOUNT;
     this.apiKey = process.env.CROSSMALL_API_KEY;
+    // 並列起動防止: syncAll / syncOrders どちらの経路でも共通の1本ロック
+    // Phase1で起動時setTimeout(syncOrders) と 2h cron(syncAll→syncOrders) が
+    // 重複起動していた問題への対策
+    this.isSyncing = false;
   }
 
   // ===== 既存（変更なし）: 署名・HTTPリクエスト =====
@@ -135,6 +139,19 @@ class CrossmallService {
   // CROSSMALL の構造: get_order でヘッダ取得 → 各注文に get_order_detail で明細取得（2段階）
   // ページネーション: order_date_fr で範囲指定 + order_number カーソル方式（昇順固定）
   async syncOrders() {
+    if (this.isSyncing) {
+      console.log('[CrossmallService] syncOrders スキップ（既に同期実行中）');
+      return;
+    }
+    this.isSyncing = true;
+    try {
+      return await this._syncOrdersImpl();
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
+  async _syncOrdersImpl() {
     const INITIAL_DAYS = 90;
     const MARGIN_DAYS = 2;
 
@@ -317,10 +334,25 @@ class CrossmallService {
 
   // ===== 全体同期 =====
   async syncAll() {
+    if (this.isSyncing) {
+      console.log('[CrossmallService] syncAll スキップ（既に同期実行中）');
+      return;
+    }
+    this.isSyncing = true;
+    try {
+      return await this._syncAllImpl();
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
+  async _syncAllImpl() {
     console.log('[CrossmallService] 同期開始...');
     try {
       // 1. 注文蓄積（CrossmallSale + 統計）
-      await this.syncOrders();
+      //    syncAll 内から呼ぶ場合は既に isSyncing=true のため、syncOrders() ではなく
+      //    実装本体を直接呼び出す（ダブルガードを回避）
+      await this._syncOrdersImpl();
 
       // 2. 在庫取得（CrossmallProduct.stock）
       const stocks = await this.getStock();
