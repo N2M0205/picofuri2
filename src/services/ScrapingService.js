@@ -14,7 +14,11 @@ class ScrapingService {
     this.filter = new FilterService();
     this.isRunning = false;
     this.lastRunAt = null;
-    this.stats = { success: 0, error: 0, notified: 0, filtered: 0 };
+    this.stats = { success: 0, error: 0, notified: 0, filtered: 0, capped: 0 };
+    // 1スキャンあたりの通知上限（スパム防止・env で外部化）
+    // 0 or 未設定なら無制限
+    this._perScanNotifyCount = 0;
+    this._capHitLogged = false;
   }
 
   async initialize() {
@@ -48,6 +52,10 @@ class ScrapingService {
     const startTime = Date.now();
     console.log(`[ScrapingService] スキャン開始: ${new Date().toLocaleString('ja-JP')}`);
 
+    // per-scan 通知カウンタをリセット（env はスキャン毎に読み直し、pm2 restart --update-env 反映を早める）
+    this._perScanNotifyCount = 0;
+    this._capHitLogged = false;
+
     try {
       const keywords = await Keyword.findAll({ where: { isActive: true } });
       const mercariKeywords = keywords.filter(k => k.platforms.includes('mercari'));
@@ -74,7 +82,8 @@ class ScrapingService {
       ]);
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[ScrapingService] スキャン完了: ${elapsed}秒 / 通知: ${this.stats.notified}件 / フィルタ除外: ${this.stats.filtered}件`);
+      const capMsg = this._capHitLogged ? ` / キャップ抑制: ${this.stats.capped}件` : '';
+      console.log(`[ScrapingService] スキャン完了: ${elapsed}秒 / 通知: ${this.stats.notified}件 / フィルタ除外: ${this.stats.filtered}件${capMsg}`);
       this.lastRunAt = new Date();
 
     } catch (err) {
@@ -140,9 +149,24 @@ class ScrapingService {
         throw err;
       }
 
-      // 6. 通知（NotificationServiceがLINE/Telegramを内部で判定）
+      // 6. 通知キャップチェック（1スキャン全体で NOTIFY_CAP_PER_SCAN 件まで）
+      //    DetectedItem は既に notified=false で登録済み。
+      //    キャップ超過分は notified=false のまま残す → 次回スキャンで既存判定に引っかかるので
+      //    通知は永遠に来ないが、スパム防止を優先する仕様
+      const cap = parseInt(process.env.NOTIFY_CAP_PER_SCAN) || 0;
+      if (cap > 0 && this._perScanNotifyCount >= cap) {
+        if (!this._capHitLogged) {
+          console.log(`[ScrapingService] 通知キャップ到達（${cap}件）残りの通知をスキップ`);
+          this._capHitLogged = true;
+        }
+        this.stats.capped++;
+        continue;
+      }
+
+      // 7. 通知（NotificationServiceがLINE/Telegramを内部で判定）
       await this.notification.notifyNewItem(item, keyword, product);
       await detected.update({ notified: true, notifiedAt: new Date() });
+      this._perScanNotifyCount++;
       this.stats.notified++;
     }
   }
