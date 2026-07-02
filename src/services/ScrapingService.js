@@ -52,13 +52,21 @@ class ScrapingService {
     // _processItems は並列実行されるためリアルタイムでカウンタ共有が必要 →
     // オブジェクトで包んで参照渡し（返り値集計だと並列中のキャップ判定に間に合わない）。
     // env はスキャン毎に読み直し、pm2 restart --update-env 反映を早める。
-    const scanState = { notifyCount: 0, cappedCount: 0, capHitLogged: false };
+    // yahooRateLimited: 429検出時のサーキットブレーカー、残Yahooキーワードを全スキップ。
+    const scanState = { notifyCount: 0, cappedCount: 0, capHitLogged: false, yahooRateLimited: false };
     const cap = parseInt(process.env.NOTIFY_CAP_PER_SCAN) || 0;
+
+    // YAHOO_SCRAPING_ENABLED=false でYahooスキャン全体をスキップ（rate limit対策の運用フラグ）
+    const yahooEnabled = process.env.YAHOO_SCRAPING_ENABLED !== 'false';
 
     try {
       const keywords = await Keyword.findAll({ where: { isActive: true } });
       const mercariKeywords = keywords.filter(k => k.platforms.includes('mercari'));
-      const yahooKeywords   = keywords.filter(k => k.platforms.includes('yahoo_flea'));
+      const yahooKeywords   = yahooEnabled ? keywords.filter(k => k.platforms.includes('yahoo_flea')) : [];
+
+      if (!yahooEnabled) {
+        console.log('[ScrapingService] YAHOO_SCRAPING_ENABLED=false: Yahoo!フリマスキャン全体をスキップ');
+      }
 
       const concMercari = parseInt(process.env.SCRAPING_CONCURRENCY_MERCARI) || 3;
       const concYahoo   = parseInt(process.env.SCRAPING_CONCURRENCY_YAHOO)   || 2;
@@ -70,9 +78,24 @@ class ScrapingService {
       });
 
       const yahooTasks = yahooKeywords.map(kw => async () => {
-        const items = await this.yahooScraper.search(kw.keyword);
-        await this._processItems(items, kw, scanState, cap);
-        return items.length;
+        // サーキットブレーカー: 本スキャン中に既に429検出済みなら即スキップ
+        if (scanState.yahooRateLimited) return 0;
+        try {
+          const items = await this.yahooScraper.search(kw.keyword);
+          // 並列レースで search 中に別ワーカーが429検出した場合の追加ガード
+          if (scanState.yahooRateLimited) return 0;
+          await this._processItems(items, kw, scanState, cap);
+          return items.length;
+        } catch (err) {
+          if (err && err.name === 'YahooRateLimitError') {
+            if (!scanState.yahooRateLimited) {
+              console.warn('[YahooScraper] 429検出、本スキャンの残りYahooキーワードをスキップ');
+              scanState.yahooRateLimited = true;
+            }
+            return 0;
+          }
+          throw err;
+        }
       });
 
       await Promise.all([
