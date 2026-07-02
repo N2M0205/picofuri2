@@ -7,6 +7,15 @@ const { v4: uuidv4 } = require('uuid');
 
 puppeteer.use(StealthPlugin());
 
+// 429検出時のサーキットブレーカー用エラー型
+// ScrapingService 側で err.name === 'YahooRateLimitError' を判定して本スキャンのYahoo残キーワードを打ち切る
+class YahooRateLimitError extends Error {
+  constructor(message = 'Yahoo!フリマ rate limit (HTTP 429)') {
+    super(message);
+    this.name = 'YahooRateLimitError';
+  }
+}
+
 class YahooScraper {
 
   async search(keyword) {
@@ -33,10 +42,44 @@ class YahooScraper {
       );
 
       const searchUrl = `https://paypayfleamarket.yahoo.co.jp/search/${encodeURIComponent(keyword)}`;
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const response = await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
+      // 早期判定1: HTTP 429（rate limit 応答をpuppeteerが取得できた場合）
+      if (response && response.status() === 429) {
+        throw new YahooRateLimitError();
+      }
+
+      // 早期判定2: rate limit ページのタイトル（HTTPステータスがエラーページで書き換わるケースの保険）
+      // 実測（2026-07-02）: 429時に返るページタイトルは
+      //   "Yahoo! JAPAN - ご覧になろうとしているページは現在表示できません。"
+      const title = await page.title();
+      if (title.includes('ご覧になろうとしているページは現在表示できません')) {
+        throw new YahooRateLimitError();
+      }
+
+      // 早期判定3: 「該当なし」ページマーカー（body textを軽くチェック、waitForSelectorの前に打ち切る）
+      // 注: 実際の0件ページ構造は rate limit中で未検証。よく使われる文言を候補列挙。
+      // 誤判定リスクを下げるため、body innerText の全文検索でヒットしたら空配列返却。
+      // 実運用開始後、誤検出があれば修正する。
+      const noResultsMarker = await page.evaluate(() => {
+        const body = document.body?.innerText || '';
+        const markers = [
+          '該当する商品が見つかりませんでした',
+          '検索結果はありません',
+          '検索結果は0件',
+          '検索結果 0件',
+          '該当する商品はありません',
+          '見つかりませんでした',
+        ];
+        return markers.find(m => body.includes(m)) || null;
+      });
+      if (noResultsMarker) {
+        return [];
+      }
+
+      // 商品リンク待ち: 元15秒→5秒に短縮（rate limit / 該当なしはすでに上で早期returnしている想定）
       try {
-        await page.waitForSelector('a[href*="/item/"]', { timeout: 15000 });
+        await page.waitForSelector('a[href*="/item/"]', { timeout: 5000 });
       } catch {
         console.warn(`[YahooScraper] "${keyword}": 商品セレクタのタイムアウト`);
         return [];
@@ -95,6 +138,8 @@ class YahooScraper {
       }));
 
     } catch (err) {
+      // YahooRateLimitError は上位（ScrapingService）でハンドリングするため再throw
+      if (err instanceof YahooRateLimitError) throw err;
       console.error(`[YahooScraper] "${keyword}" エラー: ${err.message}`);
       return [];
 
@@ -122,3 +167,4 @@ class YahooScraper {
 }
 
 module.exports = YahooScraper;
+module.exports.YahooRateLimitError = YahooRateLimitError;
