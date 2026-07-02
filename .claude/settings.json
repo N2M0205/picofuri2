@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/picofuri2/picofuri2/scripts/claude-notify-hook.sh stop"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/picofuri2/picofuri2/scripts/claude-notify-hook.sh notification"
+          }
+        ]
+      }
+    ]
+  }
+}
