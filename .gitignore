@@ -5,6 +5,7 @@ database.sqlite
 database.sqlite-shm
 database.sqlite-wal
 database.sqlite.bak_*
-logs/
+logs/*
+!logs/assumptions/
 *.log
 integration-test.log
