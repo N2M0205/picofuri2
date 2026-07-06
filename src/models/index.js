@@ -64,7 +64,11 @@ const CrossmallProduct = sequelize.define('CrossmallProduct', {
   // Phase1 追加
   lastSalePrice: { type: DataTypes.INTEGER, defaultValue: 0 },
   lastSaleDate: { type: DataTypes.DATE, allowNull: true },
-  deliveryType: { type: DataTypes.STRING, allowNull: true }
+  deliveryType: { type: DataTypes.STRING, allowNull: true },
+  // n派生コード名寄せ用: 末尾"n"を除去したベースitemCode
+  // 自身がベースの場合は itemCode と同値、n派生の場合はベース側の itemCode
+  // 実体単位の販売実績合算 (階層化スキャンでの利用予定) の起点
+  baseItemCode: { type: DataTypes.STRING, allowNull: true }
 }, { timestamps: true });
 
 // Phase1 新規: CROSSMALL注文蓄積テーブル
