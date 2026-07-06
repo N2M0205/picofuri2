@@ -4,6 +4,14 @@ const YahooScraper = require('../scrapers/YahooScraper.js');
 const CrossmallService = require('./CrossmallService.js');
 const NotificationService = require('./NotificationService.js');
 const FilterService = require('./FilterService.js');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const axios = require('axios');
+
+// Cascading circuit breaker 閾値: 直近30分に 2回以上の429検出で自動Yahoo停止
+const YAHOO_429_WINDOW_MS = 30 * 60 * 1000;
+const YAHOO_429_THRESHOLD = 2;
 
 class ScrapingService {
   constructor() {
@@ -15,6 +23,52 @@ class ScrapingService {
     this.isRunning = false;
     this.lastRunAt = null;
     this.stats = { success: 0, error: 0, notified: 0, filtered: 0, capped: 0 };
+    // Cascading breaker: in-memory の429タイムスタンプ履歴と自動停止フラグ
+    // プロセス再起動でリセットされる（.env自体は書き換えない）
+    this.yahoo429History = [];
+    this.yahooAutoDisabled = false;
+    this.yahooAutoDisabledAt = null;
+  }
+
+  // 429検出時に呼ぶ。ウィンドウ内の件数を確認し閾値到達なら自動停止&Telegram通知。
+  _record429AndMaybeAutoDisable() {
+    const now = Date.now();
+    // 古いタイムスタンプを除去してから新規追加
+    this.yahoo429History = this.yahoo429History.filter(t => now - t < YAHOO_429_WINDOW_MS);
+    this.yahoo429History.push(now);
+
+    if (this.yahoo429History.length >= YAHOO_429_THRESHOLD && !this.yahooAutoDisabled) {
+      this.yahooAutoDisabled = true;
+      this.yahooAutoDisabledAt = new Date();
+      const msg = '🚨 Yahoo自動停止: 429が直近30分に2回以上検出されたため自動停止しました。復旧するには .env の YAHOO_SCRAPING_ENABLED を確認してください';
+      console.error(`[ScrapingService] ${msg}`);
+      // Telegram通知は非同期発火（awaitしない、失敗しても運用継続）
+      this._sendYahooAutoDisableNotification(msg);
+    }
+  }
+
+  async _sendYahooAutoDisableNotification(text) {
+    try {
+      const credPath = path.join(os.homedir(), '.claude-notify.env');
+      if (!fs.existsSync(credPath)) {
+        console.warn('[ScrapingService] ~/.claude-notify.env 不在、Telegram通知スキップ');
+        return;
+      }
+      const content = fs.readFileSync(credPath, 'utf-8');
+      const tokenMatch = content.match(/CLAUDE_NOTIFY_BOT_TOKEN=([^\n\r]+)/);
+      const chatMatch  = content.match(/CLAUDE_NOTIFY_CHAT_ID=([^\n\r]+)/);
+      if (!tokenMatch || !chatMatch) {
+        console.warn('[ScrapingService] .claude-notify.env の資格情報不備、Telegram通知スキップ');
+        return;
+      }
+      await axios.post(
+        `https://api.telegram.org/bot${tokenMatch[1].trim()}/sendMessage`,
+        { chat_id: chatMatch[1].trim(), text },
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      console.error('[ScrapingService] Yahoo自動停止 Telegram通知エラー:', e.message);
+    }
   }
 
   async initialize() {
@@ -57,7 +111,9 @@ class ScrapingService {
     const cap = parseInt(process.env.NOTIFY_CAP_PER_SCAN) || 0;
 
     // YAHOO_SCRAPING_ENABLED=false でYahooスキャン全体をスキップ（rate limit対策の運用フラグ）
-    const yahooEnabled = process.env.YAHOO_SCRAPING_ENABLED !== 'false';
+    // 加えて、cascading circuit breaker (this.yahooAutoDisabled) が立っている場合も同様にスキップ
+    const envYahooEnabled = process.env.YAHOO_SCRAPING_ENABLED !== 'false';
+    const yahooEnabled = envYahooEnabled && !this.yahooAutoDisabled;
     // YAHOO_KEYWORD_ALLOWLIST=カンマ区切りキーワード名 で Yahoo対象を絞り込む（段階的再開の検証用）
     // 空文字/未設定なら絞り込みなし（全 yahoo_flea キーワードが対象）
     const yahooAllowlist = (process.env.YAHOO_KEYWORD_ALLOWLIST || '')
@@ -69,7 +125,11 @@ class ScrapingService {
       let yahooKeywords = yahooEnabled ? keywords.filter(k => k.platforms.includes('yahoo_flea')) : [];
 
       if (!yahooEnabled) {
-        console.log('[ScrapingService] YAHOO_SCRAPING_ENABLED=false: Yahoo!フリマスキャン全体をスキップ');
+        if (this.yahooAutoDisabled) {
+          console.warn(`[ScrapingService] Yahoo自動停止中（cascading breaker発動 ${this.yahooAutoDisabledAt?.toISOString()}、プロセス再起動でリセット）`);
+        } else {
+          console.log('[ScrapingService] YAHOO_SCRAPING_ENABLED=false: Yahoo!フリマスキャン全体をスキップ');
+        }
       } else if (yahooAllowlist.length > 0) {
         const before = yahooKeywords.length;
         yahooKeywords = yahooKeywords.filter(k => yahooAllowlist.includes(k.keyword));
@@ -100,6 +160,8 @@ class ScrapingService {
               console.warn('[YahooScraper] 429検出、本スキャンの残りYahooキーワードをスキップ');
               scanState.yahooRateLimited = true;
             }
+            // Cascading breaker: 直近30分の429件数を追跡、閾値到達で自動停止&Telegram通知
+            this._record429AndMaybeAutoDisable();
             return 0;
           }
           throw err;
