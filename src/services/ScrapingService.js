@@ -58,14 +58,22 @@ class ScrapingService {
 
     // YAHOO_SCRAPING_ENABLED=false でYahooスキャン全体をスキップ（rate limit対策の運用フラグ）
     const yahooEnabled = process.env.YAHOO_SCRAPING_ENABLED !== 'false';
+    // YAHOO_KEYWORD_ALLOWLIST=カンマ区切りキーワード名 で Yahoo対象を絞り込む（段階的再開の検証用）
+    // 空文字/未設定なら絞り込みなし（全 yahoo_flea キーワードが対象）
+    const yahooAllowlist = (process.env.YAHOO_KEYWORD_ALLOWLIST || '')
+      .split(',').map(s => s.trim()).filter(Boolean);
 
     try {
       const keywords = await Keyword.findAll({ where: { isActive: true } });
       const mercariKeywords = keywords.filter(k => k.platforms.includes('mercari'));
-      const yahooKeywords   = yahooEnabled ? keywords.filter(k => k.platforms.includes('yahoo_flea')) : [];
+      let yahooKeywords = yahooEnabled ? keywords.filter(k => k.platforms.includes('yahoo_flea')) : [];
 
       if (!yahooEnabled) {
         console.log('[ScrapingService] YAHOO_SCRAPING_ENABLED=false: Yahoo!フリマスキャン全体をスキップ');
+      } else if (yahooAllowlist.length > 0) {
+        const before = yahooKeywords.length;
+        yahooKeywords = yahooKeywords.filter(k => yahooAllowlist.includes(k.keyword));
+        console.log(`[ScrapingService] YAHOO_KEYWORD_ALLOWLIST 適用: ${yahooKeywords.length}/${before}件に絞り込み (${yahooKeywords.map(k=>k.keyword).join(', ')})`);
       }
 
       const concMercari = parseInt(process.env.SCRAPING_CONCURRENCY_MERCARI) || 3;
