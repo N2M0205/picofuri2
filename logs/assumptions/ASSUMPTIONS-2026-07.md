@@ -96,3 +96,40 @@
 | 判定 | ✅ 429検出・サーキットブレーカー実装が本番稼働で誤動作なし。少数キーワードでの Yahoo アクセスは安定 |
 
 ---
+
+### [2026-07-06 10:37〜10:39] Yahoo 20kw拡大 → 429再発 → 事前承認済み安全対応で停止
+
+- **種別**: ✅仮定して進行（事前承認済み安全対応）→ 復旧方針は🛑ビジネス判断でオーナー確認
+- **内容**: 8kw安定確認後、20kwに拡大 (10:37:33 反映) するも初回スキャンで即429検出 (10:38:11)、事前承認済み安全対応で `YAHOO_SCRAPING_ENABLED=false` に戻し (10:39:22 反映)。allowlist は復旧用に残置。
+- **理由**: オーナー明示指示「429が再発した場合は、即座に再度 YAHOO_SCRAPING_ENABLED=false に戻したうえで報告してください（これは事前承認済みの安全対応として実行してよい）」に該当。
+- **影響範囲**: `.env`（`YAHOO_SCRAPING_ENABLED=false`、`YAHOO_KEYWORD_ALLOWLIST=20件セット` は保持）
+
+#### 20kw 選定基準の仮定（仮定17）
+- **仮定17**: 追加12キーワードの選定は OVERNIGHT TOP25 の未収載品で min>0、深刻な誤ヒット指摘なし（パクパク酵母くん・WiQo・ホルモ プレミアム除外）。**理由**: 段階的再開の目的は「429検証」であり、フィルタ精度は別スコープ。**影響範囲**: `.env YAHOO_KEYWORD_ALLOWLIST`。
+
+#### 429 検出時の安全対応の仮定（仮定18）
+- **仮定18**: 429検出後 `.env` を書き戻して pm2 restart --update-env。**理由**: オーナー事前承認 (「事前承認済みの安全対応として実行してよい」)。**影響範囲**: `.env`、pm2 プロセス。**副次的判断**: allowlist の20件セットは削除せず残置し、`YAHOO_SCRAPING_ENABLED=true` に戻すだけで20kw運用に復帰可能な状態を維持。
+
+#### オーナー決定内容（2026-07-06 に確定）
+- **Q1: (C) アクセス頻度の見直し** を軸に対応（並列度の縮小か、リクエスト間 sleep 挿入）
+- **Q2: (b) Task 2（cascading circuit breaker）先行実装** — 手動フォールバックの自動化
+- **Q3: (a) feat/yahoo-partial-reenable のマージ** — allowlist 実装は 8kw運用にも必要のためマージ確定
+
+---
+
+### [2026-07-06 10:xx〜] Task 2 cascading circuit breaker + Task 4 頻度見直し（feat/yahoo-auto-fallback）
+
+- **種別**: ✅仮定して進行（技術選択）
+- **内容**: 429検出2回/30分でin-memoryフラグを立てて自動Yahoo停止、Telegram通知。並列度は 2→1 に落として burst 消滅。
+- **理由**: 手動安全対応の自動化（safety net先行）と、実測から burst 検出仮説が濃厚なため concurrency=1 の効き目が期待できる。
+- **影響範囲**: `src/services/ScrapingService.js`（in-memory フラグ、Telegram送信）、`.env`（`SCRAPING_CONCURRENCY_YAHOO` 変更）
+
+#### 実装フェーズで仮定した内容
+
+- **仮定19**: Task 4 の頻度見直しは **案2（並列度 1）を採用**（案1 の1-2秒sleepは採用せず）。**理由**: cron watch (1req/hour, 直列) は3日連続200成功、20kw × 並列2 (~0.5req/sec) は初回で429 → Yahoo は**バースト検出型 rate limit** の可能性が濃厚。並列度 1 = 同時アクセスゼロ = burstゼロ が最も効くと判断。実装は `.env` の `SCRAPING_CONCURRENCY_YAHOO` を 2 → 1 に変更するだけで最小。**影響範囲**: `.env`。**代替案**: 案2で不十分なら、後日 案1 (sleep追加) を上乗せする余地は残す。
+- **仮定20**: 自動フォールバックの発動条件を「直近30分に **2回以上**」の 429 検出。**理由**: オーナー指示の閾値そのまま。単発 429 は一時的な負荷スパイクの可能性、2回目で明確な傾向と判断。**影響範囲**: `src/services/ScrapingService.js`。
+- **仮定21**: 自動フォールバックのリセットは **プロセス再起動時のみ**（.envには触れない、in-memory 限定）。**理由**: オーナー明示指示「.envファイル自体の書き換えは行わない。プロセス再起動で自動リセットされる一時的な安全装置とする」。**影響範囲**: 復旧手順は pm2 restart --update-env が必要。
+- **仮定22**: Telegram通知は `~/.claude-notify.env` を ScrapingService から直接読み込み、`axios.post` で送信（既存 `scripts/claude-notify-hook.sh` を bash からshell out するのではなく、Node内で直接）。**理由**: (i) 同一プロセス内で完結、(ii) shell out のオーバーヘッド回避、(iii) 依存(axios) は既にプロジェクトにあり。**影響範囲**: `src/services/ScrapingService.js` に fs / axios / os / path の require 追加。
+- **仮定23**: 検証は 8kw + 並列度1 で 3-5スキャン、問題なければ 12kw に小拡大。**理由**: オーナー指示に沿った段階拡大。20kw への直接復帰は今回スコープ外。**影響範囲**: `.env YAHOO_KEYWORD_ALLOWLIST` の追加4件選定。
+
+---
