@@ -4,6 +4,7 @@ const YahooScraper = require('../scrapers/YahooScraper.js');
 const CrossmallService = require('./CrossmallService.js');
 const NotificationService = require('./NotificationService.js');
 const FilterService = require('./FilterService.js');
+const TierClassifier = require('./TierClassifier.js');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -20,8 +21,10 @@ class ScrapingService {
     this.crossmall = new CrossmallService();
     this.notification = new NotificationService();
     this.filter = new FilterService();
-    this.isRunning = false;
+    // 階層別のスキャン中フラグ (Hot/Warm/Cold は独立、'all' は tier 指定なしの後方互換用)
+    this.isRunningByTier = { hot: false, warm: false, cold: false, all: false };
     this.lastRunAt = null;
+    this.lastRunAtByTier = { hot: null, warm: null, cold: null, all: null };
     this.stats = { success: 0, error: 0, notified: 0, filtered: 0, capped: 0 };
     // Cascading breaker: in-memory の429タイムスタンプ履歴と自動停止フラグ
     // プロセス再起動でリセットされる（.env自体は書き換えない）
@@ -93,14 +96,20 @@ class ScrapingService {
     return results;
   }
 
-  async runScan() {
-    if (this.isRunning) {
-      console.log('[ScrapingService] 前回スキャン実行中のためスキップ');
+  async runScan(options = {}) {
+    // tier 指定: 'hot' | 'warm' | 'cold' | null (未指定=全件)
+    // Hot/Warm/Cold の各階層で独立ロックし、Cold の長時間スキャン中でも Hot が並列可能。
+    const tier = options.tier || null;
+    const lockKey = tier || 'all';
+    const tierLabel = tier ? `[${tier}]` : '[all]';
+
+    if (this.isRunningByTier[lockKey]) {
+      console.log(`[ScrapingService] ${tierLabel} 前回スキャン実行中のためスキップ`);
       return;
     }
-    this.isRunning = true;
+    this.isRunningByTier[lockKey] = true;
     const startTime = Date.now();
-    console.log(`[ScrapingService] スキャン開始: ${new Date().toLocaleString('ja-JP')}`);
+    console.log(`[ScrapingService] スキャン開始 ${tierLabel}: ${new Date().toLocaleString('ja-JP')}`);
 
     // per-scan 状態はローカル変数に閉じ込めて、インスタンス変数のリセット漏れを構造的に排除する。
     // _processItems は並列実行されるためリアルタイムでカウンタ共有が必要 →
@@ -120,7 +129,19 @@ class ScrapingService {
       .split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-      const keywords = await Keyword.findAll({ where: { isActive: true } });
+      let keywords = await Keyword.findAll({ where: { isActive: true } });
+
+      // 階層フィルタ適用 (tier 指定時のみ、指定なしは全件)
+      // 分類は毎スキャン時に最新の CrossmallProduct を基に行う (stock/sales28 の変動を即反映)
+      if (tier) {
+        const classes = await TierClassifier.classifyAll();
+        const kwIds = new Set((classes[tier] || []).map(k => k.id));
+        const before = keywords.length;
+        keywords = keywords.filter(k => kwIds.has(k.id));
+        console.log(`[ScrapingService] ${tierLabel} 階層フィルタ: ${keywords.length}/${before}件 ` +
+          `(hot=${classes.hot.length} warm=${classes.warm.length} cold=${classes.cold.length})`);
+      }
+
       const mercariKeywords = keywords.filter(k => k.platforms.includes('mercari'));
       let yahooKeywords = yahooEnabled ? keywords.filter(k => k.platforms.includes('yahoo_flea')) : [];
 
@@ -175,13 +196,14 @@ class ScrapingService {
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const capMsg = scanState.capHitLogged ? ` / キャップ抑制: ${scanState.cappedCount}件` : '';
-      console.log(`[ScrapingService] スキャン完了: ${elapsed}秒 / 通知: ${this.stats.notified}件 / フィルタ除外: ${this.stats.filtered}件${capMsg}`);
+      console.log(`[ScrapingService] スキャン完了 ${tierLabel}: ${elapsed}秒 / 通知: ${this.stats.notified}件 / フィルタ除外: ${this.stats.filtered}件${capMsg}`);
       this.lastRunAt = new Date();
+      this.lastRunAtByTier[lockKey] = this.lastRunAt;
 
     } catch (err) {
-      console.error('[ScrapingService] スキャンエラー:', err.message);
+      console.error(`[ScrapingService] スキャンエラー ${tierLabel}:`, err.message);
     } finally {
-      this.isRunning = false;
+      this.isRunningByTier[lockKey] = false;
     }
   }
 

@@ -15,11 +15,17 @@ async function main() {
 
   const crossmall = new CrossmallService();
 
-  const intervalSec = parseInt(process.env.SCRAPING_INTERVAL_SECONDS) || 60;
-  console.log(`[Scheduler] スキャン間隔: ${intervalSec}秒`);
+  // 階層別スキャン間隔 (分単位、cron)。従来の SCRAPING_INTERVAL_SECONDS は廃止。
+  const hotMin = parseInt(process.env.HOT_SCAN_INTERVAL_MINUTES) || 1;
+  const warmMin = parseInt(process.env.WARM_SCAN_INTERVAL_MINUTES) || 5;
+  const coldMin = parseInt(process.env.COLD_SCAN_INTERVAL_MINUTES) || 30;
+  const cronForMin = (m) => (m === 1 ? '* * * * *' : `*/${m} * * * *`);
+  console.log(`[Scheduler] Hot: 毎${hotMin}分、Warm: 毎${warmMin}分、Cold: 毎${coldMin}分`);
 
-  // 起動時に即1回スキャン（CROSSMALL情報なしでも参考通知は出る）
-  setTimeout(() => scraping.runScan(), 10000);
+  // 起動時: Hot/Warm/Cold を順次即実行 (バースト分散のため 10s/30s/60s の staggered start)
+  setTimeout(() => scraping.runScan({ tier: 'hot' }), 10000);
+  setTimeout(() => scraping.runScan({ tier: 'warm' }), 30000);
+  setTimeout(() => scraping.runScan({ tier: 'cold' }), 60000);
 
   // 起動時 CROSSMALL 同期は syncAll に統合（Phase2）:
   // - 初回起動時（CrossmallSale=0件）は syncOrders 内で 90日バックフィル
@@ -27,14 +33,12 @@ async function main() {
   // - syncAll 内は isSyncing フラグで並列起動を防止
   setTimeout(() => {
     crossmall.syncAll().catch(e => console.error('[起動時syncAll] エラー:', e.message));
-  }, 30000);
+  }, 90000);
 
-  // 定期スキャン（node-cron: 最小1分間隔。60秒未満はsetInterval）
-  if (intervalSec < 60) {
-    setInterval(() => scraping.runScan(), intervalSec * 1000);
-  } else {
-    cron.schedule(`*/${Math.floor(intervalSec / 60)} * * * *`, () => scraping.runScan());
-  }
+  // 階層別定期スキャン (各 tier は独立ロック、Cold の長時間中でも Hot が並列可)
+  cron.schedule(cronForMin(hotMin), () => scraping.runScan({ tier: 'hot' }));
+  cron.schedule(cronForMin(warmMin), () => scraping.runScan({ tier: 'warm' }));
+  cron.schedule(cronForMin(coldMin), () => scraping.runScan({ tier: 'cold' }));
 
   // CROSSMALL同期（2時間ごと: 注文蓄積 + 在庫 + 商品情報）
   cron.schedule('0 */2 * * *', () => crossmall.syncAll());
