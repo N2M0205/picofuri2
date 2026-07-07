@@ -11,15 +11,18 @@ class NotificationService {
   }
 
   // ===== 判定ラベル =====
+  // 2026-07-07 案B (利益順ソート) に変更: 💎 → ✅ → 🚨 の順で評価
+  //   旧順序では 🚨 緊急仕入 (pr>=12 & sd<=7) が広く先取りし、✅ 即買い が 24h 実測 0件だった。
+  //   💎 (pr>=30) → ✅ (pr>=20) → 🚨 (pr>=12) の利益率優先順に変更、閾値・条件式は不変。
   calcJudgement(profitRate, sales7, stockDays, isRare) {
     if (profitRate > 60)  return '⚠️ 利益率確認';
     if (profitRate <= -50) return '⚠️ 個数確認';
     if (profitRate < 0)   return '❌ 赤字';
     if (profitRate <= 5)  return '❌ 利益なし';
     if (profitRate < 12)  return '❌ 利益薄い';
-    if (profitRate >= 12 && stockDays !== Infinity && stockDays <= 7) return '🚨 緊急仕入';
     if (profitRate >= 30 && sales7 >= 3) return '💎 高利益';
     if (profitRate >= 20 && sales7 >= 3 && stockDays <= 14) return '✅ 即買い';
+    if (profitRate >= 12 && stockDays !== Infinity && stockDays <= 7) return '🚨 緊急仕入';
     if (isRare) return '🔥 レア即買';
     if (sales7 <= 2) return '🤔 売行鈍い';
     return '🤔 要検討';
