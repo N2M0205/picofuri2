@@ -31,8 +31,12 @@ const A_IDS = [88, 126, 127, 139, 140, 141, 168, 174, 177, 178];
 const B_KEEP_AS_IS = [83, 212];
 const B_FETCH_AND_SHORTEN = 202;
 
-const KEEP_TOKENS_D = 3;
+// 2026-07-07 owner 承認: D の tok を 3 → 4 に変更 (容量表記の消失を防ぐため)
+const KEEP_TOKENS_D = 4;
 const KEEP_TOKENS_A = 4;
+// 香り違いの区別のため、案i として 5 tokens に増やす対象
+const KEEP_TOKENS_A_CASE_I = 5;
+const A_CASE_I_IDS = [177, 178];
 const KEEP_TOKENS_B202 = 3;
 
 function tokenize(s) {
@@ -67,20 +71,21 @@ async function main() {
     if (tokens.length <= KEEP_TOKENS_D) continue; // C: 短縮不要
     const shortForm = shorten(kw.keyword, KEEP_TOKENS_D);
     plan.get(kw.id).new = shortForm;
-    plan.get(kw.id).category = 'D:3tok短縮';
+    plan.get(kw.id).category = `D:${KEEP_TOKENS_D}tok短縮`;
   }
 
-  // Step 2 (A): 10件を 4 tokens で短縮
+  // Step 2 (A): 10件を 4 tokens で短縮 (id=177,178 は案i で 5 tokens)
   for (const id of A_IDS) {
     const kw = news.find(k => k.id === id);
     if (!kw) continue;
+    const useKeep = A_CASE_I_IDS.includes(id) ? KEEP_TOKENS_A_CASE_I : KEEP_TOKENS_A;
     const tokens = tokenize(kw.keyword);
-    if (tokens.length <= KEEP_TOKENS_A) {
-      plan.get(id).category = 'A:元4tok以下、変更なし';
+    if (tokens.length <= useKeep) {
+      plan.get(id).category = `A:元${useKeep}tok以下、変更なし`;
       continue;
     }
-    plan.get(id).new = shorten(kw.keyword, KEEP_TOKENS_A);
-    plan.get(id).category = 'A:4tok短縮';
+    plan.get(id).new = shorten(kw.keyword, useKeep);
+    plan.get(id).category = A_CASE_I_IDS.includes(id) ? `A:${KEEP_TOKENS_A_CASE_I}tok短縮(案i)` : `A:${KEEP_TOKENS_A}tok短縮`;
   }
 
   // Step 2 (B): id=202 は CROSSMALL からベース商品名取得

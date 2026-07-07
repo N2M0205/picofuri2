@@ -19,7 +19,8 @@ require('dotenv').config();
 const { Op } = require('sequelize');
 const { sequelize, Keyword } = require('../src/models');
 
-const KEEP_TOKENS = 3;
+// 2026-07-07: 容量表記(50ml, 100g等)の消失を防ぐため 3 → 4 に変更
+const KEEP_TOKENS = 4;
 
 function tokenize(s) {
   // 全角スペース (　U+3000) と半角スペースの run を分離、空要素除去
