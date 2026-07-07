@@ -34,9 +34,12 @@ const B_FETCH_AND_SHORTEN = 202;
 // 2026-07-07 owner 承認: D の tok を 3 → 4 に変更 (容量表記の消失を防ぐため)
 const KEEP_TOKENS_D = 4;
 const KEEP_TOKENS_A = 4;
-// 香り違いの区別のため、案i として 5 tokens に増やす対象
+// バリエーション区別のため、案i として 5 tokens に増やす対象
+// - id=177, 178: ラフドット 香り違い (owner 案i 採用)
+// - id=126: アクニー シャンプー詰替 vs id=110 シャンプートリートメントセット詰替 の区別
+//           (id=110 4tok と衝突するため、id=126 も case i で 5tok = 元のまま維持)
 const KEEP_TOKENS_A_CASE_I = 5;
-const A_CASE_I_IDS = [177, 178];
+const A_CASE_I_IDS = [126, 177, 178];
 const KEEP_TOKENS_B202 = 3;
 
 function tokenize(s) {
