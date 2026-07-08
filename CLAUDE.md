@@ -39,6 +39,8 @@
 3. 直近24-48時間のBACKLOG.md/ASSUMPTIONS-LOG追記を確認・報告
 4. 「オーナーから送られたはずだが未着手に見える指示」があれば
    その旨を明示し、オーナーに確認を仰ぐ
+5. node scripts/check-yahoo-breaker.js で直近24時間のYahoo breaker
+   発動有無を確認・報告（2026-07-08 追加、breaker発動見落とし事故への対策）
 
 ---
 
