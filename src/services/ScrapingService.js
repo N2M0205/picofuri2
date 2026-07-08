@@ -21,10 +21,10 @@ class ScrapingService {
     this.crossmall = new CrossmallService();
     this.notification = new NotificationService();
     this.filter = new FilterService();
-    // 階層別のスキャン中フラグ (Hot/Warm/Cold は独立、'all' は tier 指定なしの後方互換用)
-    this.isRunningByTier = { hot: false, warm: false, cold: false, all: false };
+    // 階層別のスキャン中フラグ (Hot/Warm/Cold/StarredOos は独立、'all' は tier 指定なしの後方互換用)
+    this.isRunningByTier = { hot: false, warm: false, cold: false, starredOos: false, all: false };
     this.lastRunAt = null;
-    this.lastRunAtByTier = { hot: null, warm: null, cold: null, all: null };
+    this.lastRunAtByTier = { hot: null, warm: null, cold: null, starredOos: null, all: null };
     this.stats = { success: 0, error: 0, notified: 0, filtered: 0, capped: 0 };
     // Cascading breaker: in-memory の429タイムスタンプ履歴と自動停止フラグ
     // プロセス再起動でリセットされる（.env自体は書き換えない）
@@ -139,7 +139,7 @@ class ScrapingService {
         const before = keywords.length;
         keywords = keywords.filter(k => kwIds.has(k.id));
         console.log(`[ScrapingService] ${tierLabel} 階層フィルタ: ${keywords.length}/${before}件 ` +
-          `(hot=${classes.hot.length} warm=${classes.warm.length} cold=${classes.cold.length})`);
+          `(hot=${classes.hot.length} warm=${classes.warm.length} cold=${classes.cold.length} starredOos=${(classes.starredOos || []).length})`);
       }
 
       const mercariKeywords = keywords.filter(k => k.platforms.includes('mercari'));

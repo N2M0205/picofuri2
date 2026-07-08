@@ -19,12 +19,14 @@ async function main() {
   const hotMin = parseInt(process.env.HOT_SCAN_INTERVAL_MINUTES) || 1;
   const warmMin = parseInt(process.env.WARM_SCAN_INTERVAL_MINUTES) || 5;
   const coldMin = parseInt(process.env.COLD_SCAN_INTERVAL_MINUTES) || 30;
+  const starredOosMin = parseInt(process.env.STARRED_OOS_SCAN_INTERVAL_MINUTES) || 5;
   const cronForMin = (m) => (m === 1 ? '* * * * *' : `*/${m} * * * *`);
-  console.log(`[Scheduler] Hot: 毎${hotMin}分、Warm: 毎${warmMin}分、Cold: 毎${coldMin}分`);
+  console.log(`[Scheduler] Hot: 毎${hotMin}分、Warm: 毎${warmMin}分、Cold: 毎${coldMin}分、StarredOos: 毎${starredOosMin}分`);
 
-  // 起動時: Hot/Warm/Cold を順次即実行 (バースト分散のため 10s/30s/60s の staggered start)
+  // 起動時: Hot/Warm/Cold/StarredOos を順次即実行 (バースト分散のため staggered start)
   setTimeout(() => scraping.runScan({ tier: 'hot' }), 10000);
   setTimeout(() => scraping.runScan({ tier: 'warm' }), 30000);
+  setTimeout(() => scraping.runScan({ tier: 'starredOos' }), 45000);
   setTimeout(() => scraping.runScan({ tier: 'cold' }), 60000);
 
   // 起動時 CROSSMALL 同期は syncAll に統合（Phase2）:
@@ -39,6 +41,7 @@ async function main() {
   cron.schedule(cronForMin(hotMin), () => scraping.runScan({ tier: 'hot' }));
   cron.schedule(cronForMin(warmMin), () => scraping.runScan({ tier: 'warm' }));
   cron.schedule(cronForMin(coldMin), () => scraping.runScan({ tier: 'cold' }));
+  cron.schedule(cronForMin(starredOosMin), () => scraping.runScan({ tier: 'starredOos' }));
 
   // CROSSMALL同期（2時間ごと: 注文蓄積 + 在庫 + 商品情報）
   cron.schedule('0 */2 * * *', () => crossmall.syncAll());

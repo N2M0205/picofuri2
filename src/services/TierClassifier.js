@@ -1,13 +1,17 @@
-// Hot/Warm/Cold 階層分類ロジック
+// Hot/Warm/Cold + StarredOos 階層分類ロジック
 //
 // 分類は unique SKU 単位 (crossmallItemCode ベース、KeywordGroupService を利用) で行い、
 // 同一 SKU を指す全キーワードに同じ階層を適用する。
 //
 // 階層定義:
-//   Hot  : 在庫日数 ≤ HOT_THRESHOLD_DAYS (デフォルト 3日)
-//   Warm : HOT_THRESHOLD_DAYS < 在庫日数 ≤ WARM_THRESHOLD_DAYS (デフォルト 14日)
-//   Cold : それ以外 (在庫日数 ≥ WARM_THRESHOLD_DAYS + 1、または以下の対象外グループ)
-//     ・stock ≤ 0 (欠品 / 負在庫)
+//   Hot         : 在庫日数 ≤ HOT_THRESHOLD_DAYS (デフォルト 3日)
+//   Warm        : HOT_THRESHOLD_DAYS < 在庫日数 ≤ WARM_THRESHOLD_DAYS (デフォルト 14日)
+//   StarredOos  : stock=0 かつ sales28 ≥ STARRED_OOS_SALES28_THRESHOLD (デフォルト 10)
+//                 → 「⭐要注目欠品」、Warm相当のスキャン頻度 (デフォルト 5分)
+//                 ※ 負在庫 (stock<0) は対象外 (データ不整合疑いのため常に Cold)
+//   Cold        : それ以外 (在庫日数 ≥ WARM_THRESHOLD_DAYS + 1、または以下の対象外グループ)
+//     ・stock < 0 (負在庫、常に Cold)
+//     ・stock = 0 かつ sales28 < STARRED_OOS_SALES28_THRESHOLD (通常欠品)
 //     ・sales28 = 0 (無限日数)
 //     ・crossmallItemCode 未設定
 //     ・CrossmallProduct 側にレコード不在
@@ -20,7 +24,7 @@
 const { CrossmallProduct } = require('../models');
 const { getKeywordGroups } = require('./KeywordGroupService');
 
-const TIER = Object.freeze({ HOT: 'hot', WARM: 'warm', COLD: 'cold' });
+const TIER = Object.freeze({ HOT: 'hot', WARM: 'warm', COLD: 'cold', STARRED_OOS: 'starredOos' });
 
 function stockDays(stock, sales28) {
   if (!sales28 || sales28 <= 0) return Infinity;
@@ -36,6 +40,7 @@ function stockDays(stock, sales28) {
 async function classifyAll() {
   const hotMax = parseInt(process.env.HOT_THRESHOLD_DAYS, 10) || 3;
   const warmMax = parseInt(process.env.WARM_THRESHOLD_DAYS, 10) || 14;
+  const starredOosSales28Min = parseInt(process.env.STARRED_OOS_SALES28_THRESHOLD, 10) || 10;
 
   const groups = await getKeywordGroups();
   const codes = [...new Set(groups.map(g => g.itemCode).filter(Boolean))];
@@ -44,11 +49,11 @@ async function classifyAll() {
     : [];
   const prodMap = new Map(prods.map(p => [p.itemCode, p]));
 
-  const buckets = { hot: [], warm: [], cold: [] };
+  const buckets = { hot: [], warm: [], cold: [], starredOos: [] };
   const meta = {
     hot: 0, warm: 0,
     coldFinite: 0, coldInf: 0,
-    oos: 0, negativeStock: 0, noProduct: 0, unmapped: 0,
+    oos: 0, starredOos: 0, negativeStock: 0, noProduct: 0, unmapped: 0,
   };
 
   for (const g of groups) {
@@ -67,11 +72,19 @@ async function classifyAll() {
         const stock = p.stock || 0;
         const sales28 = p.sales28 || 0;
         if (stock < 0) {
+          // 負在庫はデータ不整合の疑いあり、常に Cold
           tier = TIER.COLD;
           reason = 'negativeStock';
         } else if (stock === 0) {
-          tier = TIER.COLD;
-          reason = 'oos';
+          if (sales28 >= starredOosSales28Min) {
+            // ⭐要注目欠品: 販売実績あり + 欠品 → Warm相当の頻度で監視
+            tier = TIER.STARRED_OOS;
+            reason = 'starredOos';
+          } else {
+            // 通常欠品: sales28 が閾値未満、Cold 頻度で監視
+            tier = TIER.COLD;
+            reason = 'oos';
+          }
         } else if (sales28 === 0) {
           tier = TIER.COLD;
           reason = 'coldInf';

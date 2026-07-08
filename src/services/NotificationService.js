@@ -81,6 +81,15 @@ class NotificationService {
       ? this.calcJudgement(profitRate, sales7, stockDays, isRare)
       : '📋 参考';
 
+    // 欠品バッジ: stock ≤ 0 の商品に「⚫欠品中」ラベルを付与
+    // sales28 が閾値以上なら ⭐要注目 として区別 (TierClassifier の starredOos と対応)
+    const starredOosThreshold = parseInt(process.env.STARRED_OOS_SALES28_THRESHOLD, 10) || 10;
+    let oosLabel = '';
+    if (stock <= 0) {
+      oosLabel = sales28 >= starredOosThreshold ? '⭐⚫欠品中(要注目)' : '⚫欠品中';
+    }
+    const finalJudgement = oosLabel ? `${oosLabel} | ${judgement}` : judgement;
+
     // 日付表示
     const lastSaleDateStr = lastSaleDate
       ? `${new Date(lastSaleDate).getMonth() + 1}/${new Date(lastSaleDate).getDate()}`
@@ -113,7 +122,7 @@ class NotificationService {
       : '';
 
     const lines = [
-      judgement,
+      finalJudgement,
       '',
       `🛒 ${item.title}`,
       priceStr,
