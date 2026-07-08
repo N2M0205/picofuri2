@@ -42,15 +42,14 @@ async function main() {
 
   console.log('\n[test-3] 同一itemCodeで共有される既知のペアが同グループに入る');
   // 実データベースライン: 各itemCodeに複数キーワードが紐づくペア
+  // 2026-07-08 追記: トイラボ/ToyLaBO (id=1削除), nico/ニコ (id=67削除),
+  //   バルクス/VALX (id=74削除) は横展開統合で1kwになったため対象から除外
   const knownPairs = [
-    { itemCode: '2314-001346', expectAny: ['トイラボ', 'ToyLaBO'] },
     { itemCode: '2314-001848', expectAny: ['尿酸と脂肪のダブルバスター', '尿酸と脂肪'] },
     { itemCode: '2314-001247', expectAny: ['SENOPPY CHEWABLE', 'セノッピー チュアブル'] },
     { itemCode: '2314-000192', expectAny: ['ルックルック イヌリンプラス', 'ルックルック イヌリン'] },
     { itemCode: '2314-001811', expectAny: ['りそうのコーヒー', 'risou no cofffee'] },
     { itemCode: '2314-001914', expectAny: ['ナイスリムサポート エラグ酸のチカラ', 'ナイスリム'] },
-    { itemCode: '2314-000546', expectAny: ['nico 石鹸', 'ニコ せっけん'] },
-    { itemCode: '2314-001373', expectAny: ['バルクス レッドギア', 'VALX RED GEAR'] },
   ];
   for (const pair of knownPairs) {
     const g = groups.find(x => x.itemCode === pair.itemCode);
@@ -58,6 +57,20 @@ async function main() {
     const allInSameGroup = pair.expectAny.every(name => kwList.includes(name));
     assert(g && g.keywords.length >= 2 && allInSameGroup,
       `itemCode=${pair.itemCode} : ${pair.expectAny.join(' + ')} が同グループ`);
+  }
+
+  console.log('\n[test-3b] 統合済みグループが 1 keyword のみになっていることを確認');
+  // 2026-07-08 統合: id=1,145,67,74 削除により以下の 4 SKU は 1 keyword に集約
+  const consolidatedGroups = [
+    { itemCode: '2314-001346', expectSingle: 'ToyLaBO' },
+    { itemCode: '2314-001819', expectSingle: 'ホワイトハンドセラム 20ml' },
+    { itemCode: '2314-000546', expectSingle: 'nico 石鹸' },
+    { itemCode: '2314-001373', expectSingle: 'バルクス レッドギア' },
+  ];
+  for (const c of consolidatedGroups) {
+    const g = groups.find(x => x.itemCode === c.itemCode);
+    assert(g && g.keywords.length === 1 && g.keywords[0].keyword === c.expectSingle,
+      `itemCode=${c.itemCode} : 統合後 1 keyword ("${c.expectSingle}")`);
   }
 
   console.log('\n[test-4] crossmallItemCode=null のキーワードは単独グループ');
@@ -70,9 +83,9 @@ async function main() {
     '各単独グループのキーワード数は1');
 
   console.log('\n[test-5] getKeywordsByItemCode の正常/異常系');
-  const t1 = await getKeywordsByItemCode('2314-001346');
-  assert(t1.length >= 2 && t1.some(k => k.keyword === 'トイラボ'),
-    "getKeywordsByItemCode('2314-001346') はトイラボを含む");
+  const t1 = await getKeywordsByItemCode('2314-001848');
+  assert(t1.length >= 2 && t1.some(k => k.keyword === '尿酸と脂肪のダブルバスター'),
+    "getKeywordsByItemCode('2314-001848') は尿酸と脂肪のダブルバスターを含む");
   const t2 = await getKeywordsByItemCode(null);
   assert(Array.isArray(t2) && t2.length === 0, 'getKeywordsByItemCode(null) === []');
   const t3 = await getKeywordsByItemCode('');
