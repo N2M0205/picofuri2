@@ -93,7 +93,14 @@ async function main() {
   // 負在庫 (stock<0) は欠品扱いされるか (owner ルール: 通常欠品と同じ「⚫欠品中」)
   const negProduct = { stock: -8, sales28: 8, sales7: 0, lastSalePrice: 4000, deliveryType: null };
   const negMsg = ns.buildMessage(item, kw, negProduct);
-  assert(negMsg.startsWith('⚫欠品中') && !negMsg.startsWith('⭐'), '負在庫: 「⚫欠品中」ラベル (⭐は付かない、Cold相当扱い)');
+  assert(negMsg.startsWith('⚫欠品中') && !negMsg.startsWith('⭐'), '負在庫 sales28<閾値: 「⚫欠品中」ラベル');
+
+  // 負在庫 (stock<0) 且つ sales28 ≥ 閾値: 依然として ⭐は付かない (TierClassifier と一致)
+  // これが本 fix branch の対象: 旧実装では ⭐が付いてしまうバグを修正
+  const negStarredProduct = { stock: -3, sales28: 15, sales7: 2, lastSalePrice: 4000, deliveryType: null };
+  const negStarredMsg = ns.buildMessage(item, kw, negStarredProduct);
+  assert(negStarredMsg.startsWith('⚫欠品中') && !negStarredMsg.startsWith('⭐'),
+    '負在庫 sales28≥閾値: 「⚫欠品中」のみ (⭐は付けない、TierClassifier は常に Cold のため一貫性維持)');
 
   // 通常商品 (stock>0) は欠品バッジなし
   const normalProduct = { stock: 10, sales28: 20, sales7: 5, lastSalePrice: 4000, deliveryType: null };

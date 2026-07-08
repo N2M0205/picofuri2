@@ -82,10 +82,13 @@ class NotificationService {
       : '📋 参考';
 
     // 欠品バッジ: stock ≤ 0 の商品に「⚫欠品中」ラベルを付与
-    // sales28 が閾値以上なら ⭐要注目 として区別 (TierClassifier の starredOos と対応)
+    // ⭐要注目 は stock=0 かつ sales28 ≥ 閾値 の場合のみ (TierClassifier の starredOos と一致)
+    // 負在庫 (stock<0) は sales28 に関わらず ⭐は付けない (TierClassifier は常に Cold 扱い)
     const starredOosThreshold = parseInt(process.env.STARRED_OOS_SALES28_THRESHOLD, 10) || 10;
     let oosLabel = '';
-    if (stock <= 0) {
+    if (stock < 0) {
+      oosLabel = '⚫欠品中';
+    } else if (stock === 0) {
       oosLabel = sales28 >= starredOosThreshold ? '⭐⚫欠品中(要注目)' : '⚫欠品中';
     }
     const finalJudgement = oosLabel ? `${oosLabel} | ${judgement}` : judgement;
