@@ -26,7 +26,8 @@ function truncate(kw, n) {
 
 // 容量トークン検出パターン (owner 指示: 容量情報を含む場合は 3tok以上を維持)
 // 「\d+袋」は容量ではなくセット数量なので除外
-const CAPACITY_PATTERN = /(\d+(\.\d+)?\s*(ml|g|㎖|㎎|ｇ|グラム|kg)|\d+粒|\d+回分)/i;
+// 全角数字 (０-９) も対象 (例: id=179 "５g")
+const CAPACITY_PATTERN = /([\d０-９]+(\.[\d０-９]+)?\s*(ml|g|㎖|㎎|ｇ|グラム|kg)|[\d０-９]+粒|[\d０-９]+回分)/i;
 
 // 容量トークンが最初に現れる位置 (1-indexed)、なければ 0 を返す
 function capacityTokenPosition(keyword) {
@@ -95,10 +96,16 @@ async function main() {
   // 各 kw の初期 target を計算
   const tokTargetById = new Map();
   const capacityStarted = new Set(); // 容量ルールで初期 target が引き上げられた kw
+  const capacityOverMaxTok = new Set(); // 選択肢B: 容量位置が MAX_TOK 超え → 原文維持
   for (const kw of all) {
     const capPos = capacityTokenPosition(kw.keyword);
     let initial = Math.max(2, capPos);
     if (capPos > 0 && capPos > 2) capacityStarted.add(kw.id);
+    // 選択肢B: 容量トークンが MAX_TOK を超える位置にある場合、短縮を諦めて原文維持
+    if (capPos > MAX_TOK) {
+      initial = tokenize(kw.keyword).length; // 元 tokens 長 = 変更なし
+      capacityOverMaxTok.add(kw.id);
+    }
     tokTargetById.set(kw.id, initial);
   }
 
@@ -108,7 +115,8 @@ async function main() {
   for (const [k, v] of Object.entries(initByN).sort()) {
     console.log(`  target=${k}tok から開始: ${v}件`);
   }
-  console.log(`  うち容量ルールで初期target引き上げられた: ${capacityStarted.size}件\n`);
+  console.log(`  うち容量ルールで初期target引き上げられた: ${capacityStarted.size}件`);
+  console.log(`  うち選択肢B (容量>MAX_TOK) で原文維持となる: ${capacityOverMaxTok.size}件\n`);
 
   // イテレーション
   let iteration = 0;
