@@ -44,10 +44,11 @@ async function main() {
   // 実データベースライン: 各itemCodeに複数キーワードが紐づくペア
   // 2026-07-08 追記: トイラボ/ToyLaBO (id=1削除), nico/ニコ (id=67削除),
   //   バルクス/VALX (id=74削除) は横展開統合で1kwになったため対象から除外
+  // 2026-07-09 追記: SENOPPY CHEWABLE/セノッピー チュアブル (id=16削除),
+  //   ルックルック イヌリン/イヌリンプラス (id=22削除) は
+  //   cross-group-consolidation-2 で 1kw に集約されたため対象から除外
   const knownPairs = [
     { itemCode: '2314-001848', expectAny: ['尿酸と脂肪のダブルバスター', '尿酸と脂肪'] },
-    { itemCode: '2314-001247', expectAny: ['SENOPPY CHEWABLE', 'セノッピー チュアブル'] },
-    { itemCode: '2314-000192', expectAny: ['ルックルック イヌリンプラス', 'ルックルック イヌリン'] },
     { itemCode: '2314-001811', expectAny: ['りそうのコーヒー', 'risou no cofffee'] },
     { itemCode: '2314-001914', expectAny: ['ナイスリムサポート エラグ酸のチカラ', 'ナイスリム'] },
   ];
@@ -61,11 +62,14 @@ async function main() {
 
   console.log('\n[test-3b] 統合済みグループが 1 keyword のみになっていることを確認');
   // 2026-07-08 統合: id=1,145,67,74 削除により以下の 4 SKU は 1 keyword に集約
+  // 2026-07-09 統合: id=16,22 削除により以下の 2 SKU も 1 keyword に集約
   const consolidatedGroups = [
     { itemCode: '2314-001346', expectSingle: 'ToyLaBO' },
     { itemCode: '2314-001819', expectSingle: 'ホワイトハンドセラム 20ml' },
     { itemCode: '2314-000546', expectSingle: 'nico 石鹸' },
     { itemCode: '2314-001373', expectSingle: 'バルクス レッドギア' },
+    { itemCode: '2314-001247', expectSingle: 'セノッピー チュアブル' },
+    { itemCode: '2314-000192', expectSingle: 'ルックルック イヌリンプラス' },
   ];
   for (const c of consolidatedGroups) {
     const g = groups.find(x => x.itemCode === c.itemCode);
