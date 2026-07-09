@@ -47,9 +47,11 @@ async function main() {
   // 2026-07-09 追記: SENOPPY CHEWABLE/セノッピー チュアブル (id=16削除),
   //   ルックルック イヌリン/イヌリンプラス (id=22削除) は
   //   cross-group-consolidation-2 で 1kw に集約されたため対象から除外
+  // 2026-07-09 追記2: id=62 "risou no cofffee" は typo対策として実効性ゼロと
+  //   Case D 検証で判明したため削除。りそうのコーヒー(id=21) と risou no Coffee 30(id=4) は残存
   const knownPairs = [
     { itemCode: '2314-001848', expectAny: ['尿酸と脂肪のダブルバスター', '尿酸と脂肪'] },
-    { itemCode: '2314-001811', expectAny: ['りそうのコーヒー', 'risou no cofffee'] },
+    { itemCode: '2314-001811', expectAny: ['りそうのコーヒー', 'risou no Coffee 30'] },
     { itemCode: '2314-001914', expectAny: ['ナイスリムサポート エラグ酸のチカラ', 'ナイスリム'] },
   ];
   for (const pair of knownPairs) {
