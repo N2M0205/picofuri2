@@ -8,6 +8,17 @@ class FilterService {
 
   // ========== タイトルフィルタ（検索結果の事前絞り込み）==========
   // 全角英数→半角 / 正規化 / AND判定 / フレーズ一致
+  //
+  // モード切替 (env var):
+  //   MATCHES_KEYWORD_MODE=and-full        (デフォルト、現状維持: 有効tokenを全 AND判定)
+  //   MATCHES_KEYWORD_MODE=first-n-tokens  (先頭N tokenのみAND判定、案E-1)
+  //   MATCHES_KEYWORD_FIRST_N=3            (first-n-tokens モード時のN、デフォルト3)
+  //
+  // 案E-1 の狙い:
+  //   Case D 検証で「Mercariは緩い部分マッチ / filter は AND完全一致」の非対称が判明。
+  //   短縮 (案A) の後もまだ弾かれ得るケースを救済するため、
+  //   先頭N tokenのみを AND対象とし通過率を上げる。
+  //   fallback のフレーズ一致は両モードで維持 (安全網)。
   matchesKeyword(title, keyword) {
     const normalize = str => str
       .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
@@ -26,10 +37,15 @@ class FilterService {
     const words = normKeyword.split(/\s+/).filter(w => w && !STOP_WORDS.includes(w));
     if (words.length === 0) return true;
 
-    // AND判定
-    if (words.every(w => normTitle.includes(w))) return true;
+    // モード判定
+    const mode = process.env.MATCHES_KEYWORD_MODE || 'and-full';
+    const firstN = parseInt(process.env.MATCHES_KEYWORD_FIRST_N || '3', 10);
+    const wordsToMatch = mode === 'first-n-tokens' ? words.slice(0, firstN) : words;
 
-    // フレーズ一致（スペース除去後）
+    // AND判定 (モードに応じた対象トークン)
+    if (wordsToMatch.every(w => normTitle.includes(w))) return true;
+
+    // フレーズ一致（スペース除去後、両モードで安全網）
     const phraseTitle   = normTitle.replace(/\s/g, '');
     const phraseKeyword = normKeyword.replace(/\s/g, '');
     if (phraseTitle.includes(phraseKeyword)) return true;
