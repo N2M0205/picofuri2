@@ -49,6 +49,20 @@
   - 現状は sales28 が itemCode 単位で集計されているため、実体1商品の
     実力を過小評価するケースがある（n派生でのみ売れているケース等）
   - 階層判定 (Hot/Warm/Cold) の閾値見直しと合わせて検討
+  - **2026-07-10 案B（局所フォールバック）で暫定対応済み**
+    （fix/n-suffix-fallback）: ScrapingService._resolveProduct が base の
+    sales28=0 のとき n派生の sales/last* を merge して通知に渡す。
+    stock は base 側を維持。CROSSMALL 同期側 (_updateProductStats) は無変更
+  - 発覚時の影響件数: 226 アクティブキーワード中 57件 (25%) が該当していた
+    （デオエース20ml/40ml, リンカルS, シミュート30g, ラクトフェリン93,
+    さかな暮らし, アイムピンチ 60ml/30ml, & wolf 002 等）
+  - 案A（恒久策・_updateProductStats を baseItemCode 集計に）は引き続き
+    検討課題。決定が必要な論点:
+    - n派生 CrossmallProduct の sales7/28 の扱い（0維持 or 合算値二重保持 or 廃止）
+    - 集約後の isOverstock 判定（stockDaysが伸びて過剰在庫スキップが増える
+      keyword が出る可能性。現時点でも案Bで発生: 例 さかな暮らし
+      stock=21/s28=9 → stockDays=65 で LayerA スキップ対象になった）
+    - 階層化スキャン Hot/Warm/Cold 判定閾値の見直しと同時決定
 - CROSSMALL get_stock タイムアウトの retry ロジック
   （2026-07-06 の12時間観察で3件 / 約1580件、失敗率 0.19%。
   個別SKU障害で全体影響なしだが、retry 1回追加で解消可能か検討。

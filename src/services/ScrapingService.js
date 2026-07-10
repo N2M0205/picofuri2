@@ -209,15 +209,10 @@ class ScrapingService {
 
   async _processItems(items, keyword, scanState, cap) {
     // 当該キーワードに紐づく CrossmallProduct を事前取得
-    let product = null;
-    if (keyword.crossmallItemCode) {
-      product = await CrossmallProduct.findOne({ where: { itemCode: keyword.crossmallItemCode } });
-    }
-    if (!product) {
-      try {
-        product = await this.crossmall.findProductByKeyword(keyword);
-      } catch { /* CROSSMALL情報なしでも通知は出す */ }
-    }
+    // n派生コード（末尾"n"、複数カタログ）にのみ売上が集約されているケースへの
+    // 局所フォールバック: base 側 sales28=0 のとき n派生の sales/last* を採用する。
+    // stock は base 側を維持（n派生は stock=0 のことが多く在庫日数計算が壊れるため）
+    let product = await this._resolveProduct(keyword);
 
     for (const item of items) {
       // 1. タイトルフィルタ（無関係な検索結果の事前足切り）
@@ -283,6 +278,52 @@ class ScrapingService {
       scanState.notifyCount++;
       this.stats.notified++;
     }
+  }
+
+  // keyword.crossmallItemCode から通知用 product を返す。
+  // n派生に売上が集約されている場合は base(stock) + n(sales/last*) をマージする。
+  async _resolveProduct(keyword) {
+    if (!keyword.crossmallItemCode) {
+      try { return await this.crossmall.findProductByKeyword(keyword); }
+      catch { return null; }
+    }
+
+    const code = keyword.crossmallItemCode;
+    const base = await CrossmallProduct.findOne({ where: { itemCode: code } });
+    const nCode = code.endsWith('n') ? null : code + 'n';
+    const nVariant = nCode
+      ? await CrossmallProduct.findOne({ where: { itemCode: nCode } })
+      : null;
+
+    const baseSales28 = base?.sales28 ?? 0;
+    const nSales28 = nVariant?.sales28 ?? 0;
+    const nSales7  = nVariant?.sales7  ?? 0;
+    const useN = base && baseSales28 === 0 && (nSales28 > 0 || nSales7 > 0);
+
+    if (useN) {
+      console.log(`[ScrapingService] n派生フォールバック採用: keyword="${keyword.keyword}" base=${code}(stock=${base.stock}) n=${nCode}(s28=${nSales28} lsp=${nVariant.lastSalePrice})`);
+      return {
+        itemCode: base.itemCode,
+        itemName: base.itemName,
+        stock: base.stock,
+        purchasePrice: base.purchasePrice,
+        retailPrice: base.retailPrice,
+        sales7: nVariant.sales7,
+        sales14: nVariant.sales14,
+        sales28: nVariant.sales28,
+        lastSalePrice: nVariant.lastSalePrice,
+        lastSaleDate: nVariant.lastSaleDate,
+        deliveryType: nVariant.deliveryType,
+        baseItemCode: base.baseItemCode,
+        _source: 'merged(base+n)',
+      };
+    }
+
+    if (base) return base;
+    if (nVariant) return nVariant;
+
+    try { return await this.crossmall.findProductByKeyword(keyword); }
+    catch { return null; }
   }
 }
 
