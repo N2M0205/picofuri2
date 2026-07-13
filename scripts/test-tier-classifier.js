@@ -29,8 +29,9 @@ async function main() {
   assert(Array.isArray(result.cold), 'result.cold is Array');
   assert(result.meta && typeof result.meta === 'object', 'result.meta is object');
 
-  console.log('\n[test-2] hot+warm+cold 合計 === Keyword 総数');
-  const total = result.hot.length + result.warm.length + result.cold.length;
+  console.log('\n[test-2] hot+warm+cold+starredOos 合計 === Keyword 総数');
+  const starredOosLen = (result.starredOos || []).length;
+  const total = result.hot.length + result.warm.length + result.cold.length + starredOosLen;
   assert(total === totalKw, `total classified === Keyword.count() (${total} === ${totalKw})`);
 
   console.log('\n[test-3] meta 内訳の合計 === Keyword 総数');
