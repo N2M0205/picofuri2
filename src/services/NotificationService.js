@@ -6,8 +6,23 @@ class NotificationService {
     this.lineToken      = process.env.LINE_CHANNEL_ACCESS_TOKEN;
     this.lineEnabled    = process.env.LINE_NOTIFY_ENABLED === 'true';
     this.telegramToken  = process.env.TELEGRAM_BOT_TOKEN;
-    this.telegramChatId = process.env.TELEGRAM_ADMIN_ID;
+    // 通知先 chat_id (複数対応): TELEGRAM_CHAT_IDS が優先、なければ従来の
+    // TELEGRAM_ADMIN_ID を単一 chat_id として扱う (後方互換)。
+    this.telegramChatIds = NotificationService._parseChatIds(
+      process.env.TELEGRAM_CHAT_IDS,
+      process.env.TELEGRAM_ADMIN_ID
+    );
     this.telegramEnabled = process.env.TELEGRAM_NOTIFY_ENABLED === 'true';
+  }
+
+  static _parseChatIds(csv, fallbackSingle) {
+    if (csv && csv.trim()) {
+      return csv.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    if (fallbackSingle && String(fallbackSingle).trim()) {
+      return [String(fallbackSingle).trim()];
+    }
+    return [];
   }
 
   // ===== 判定ラベル =====
@@ -145,7 +160,7 @@ class NotificationService {
 
   async sendTelegram(message) {
     if (!this.telegramEnabled) return;
-    if (!this.telegramToken || !this.telegramChatId) return;
+    if (!this.telegramToken || this.telegramChatIds.length === 0) return;
 
     // Telegram は4096文字制限。安全側で4000ずつ分割
     const chunks = [];
@@ -153,15 +168,22 @@ class NotificationService {
       chunks.push(message.slice(i, i + 4000));
     }
 
-    for (const chunk of chunks) {
-      try {
-        await axios.post(
-          `https://api.telegram.org/bot${this.telegramToken}/sendMessage`,
-          { chat_id: this.telegramChatId, text: chunk },
-          { timeout: 10000 }
-        );
-      } catch (e) {
-        console.error('[Telegram] 送信エラー:', e.response?.status, e.message);
+    // 各 chat_id へ順次送信。片方の chat_id で失敗しても他方は続ける
+    // (「片方が失敗しても他方への送信は継続」仕様)。
+    // 同一 chat 内でチャンク送信中にエラーが出た場合は残りチャンクをスキップ
+    // (中途半端な分割メッセージ送信を避けるため)。
+    for (const chatId of this.telegramChatIds) {
+      for (const chunk of chunks) {
+        try {
+          await axios.post(
+            `https://api.telegram.org/bot${this.telegramToken}/sendMessage`,
+            { chat_id: chatId, text: chunk },
+            { timeout: 10000 }
+          );
+        } catch (e) {
+          console.error(`[Telegram] chat_id=${chatId} 送信エラー:`, e.response?.status, e.message);
+          break; // このチャットの残りチャンクはスキップ、次の chat_id へ
+        }
       }
     }
   }
