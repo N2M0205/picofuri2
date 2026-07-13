@@ -13,6 +13,9 @@ const axios = require('axios');
 // Cascading circuit breaker 閾値: 直近30分に 2回以上の429検出で自動Yahoo停止
 const YAHOO_429_WINDOW_MS = 30 * 60 * 1000;
 const YAHOO_429_THRESHOLD = 2;
+// breaker 発動から N ms 後、まだ停止中ならリマインダー再送 (テストで短縮可)
+const YAHOO_BREAKER_REMINDER_MS =
+  parseInt(process.env.YAHOO_BREAKER_REMINDER_MS, 10) || (30 * 60 * 1000);
 
 class ScrapingService {
   constructor() {
@@ -31,6 +34,8 @@ class ScrapingService {
     this.yahoo429History = [];
     this.yahooAutoDisabled = false;
     this.yahooAutoDisabledAt = null;
+    // breaker 発動時に仕込むリマインダー setTimeout ハンドル (重複防止・停止用)
+    this._breakerReminderTimer = null;
   }
 
   // 429検出時に呼ぶ。ウィンドウ内の件数を確認し閾値到達なら自動停止&Telegram通知。
@@ -47,7 +52,26 @@ class ScrapingService {
       console.error(`[ScrapingService] ${msg}`);
       // Telegram通知は非同期発火（awaitしない、失敗しても運用継続）
       this._sendYahooAutoDisableNotification(msg);
+      this._scheduleBreakerReminder();
     }
+  }
+
+  // breaker 発動から YAHOO_BREAKER_REMINDER_MS 後、まだ停止中ならリマインダー再送。
+  // pm2 restart 等で復旧している場合 (yahooAutoDisabled=false) は何もしない。
+  // 二重仕込み防止: 既にタイマーが走っていれば新規予約しない。
+  _scheduleBreakerReminder() {
+    if (this._breakerReminderTimer) return;
+    this._breakerReminderTimer = setTimeout(() => {
+      this._breakerReminderTimer = null;
+      if (!this.yahooAutoDisabled) return;
+      const disabledAt = this.yahooAutoDisabledAt?.toISOString?.() || '不明';
+      const minutes = Math.round(YAHOO_BREAKER_REMINDER_MS / 60000);
+      const text = `⏰ Yahoo自動停止が継続中です（発動から${minutes}分経過）。復旧するには pm2 restart が必要です（発動時刻: ${disabledAt}）`;
+      console.error(`[ScrapingService] ${text}`);
+      this._sendYahooAutoDisableNotification(text);
+    }, YAHOO_BREAKER_REMINDER_MS);
+    // Node.js プロセス終了をブロックしないよう unref
+    if (typeof this._breakerReminderTimer.unref === 'function') this._breakerReminderTimer.unref();
   }
 
   async _sendYahooAutoDisableNotification(text) {
@@ -72,6 +96,29 @@ class ScrapingService {
     } catch (e) {
       console.error('[ScrapingService] Yahoo自動停止 Telegram通知エラー:', e.message);
     }
+  }
+
+  // 日次ヘルスチェック: Yahoo 実質稼働状態を Telegram に 1行送信。
+  // 実質稼働 = YAHOO_SCRAPING_ENABLED=true かつ in-memory yahooAutoDisabled=false。
+  // どちらか false なら停止中と扱う。
+  async sendDailyHealthCheck() {
+    const envEnabled = process.env.YAHOO_SCRAPING_ENABLED !== 'false';
+    const running = envEnabled && !this.yahooAutoDisabled;
+    let text;
+    if (running) {
+      text = '☀️ 朝の稼働確認: Yahoo正常稼働中';
+    } else {
+      const reasons = [];
+      if (!envEnabled) reasons.push('YAHOO_SCRAPING_ENABLED=false');
+      if (this.yahooAutoDisabled) {
+        const at = this.yahooAutoDisabledAt?.toISOString?.() || '不明';
+        reasons.push(`cascading breaker発動中 (${at})`);
+      }
+      text = `⚠️ 朝の稼働確認: Yahoo停止中（要restart） — ${reasons.join(' / ')}`;
+    }
+    console.log(`[ScrapingService] ${text}`);
+    await this._sendYahooAutoDisableNotification(text);
+    return text;
   }
 
   async initialize() {

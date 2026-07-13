@@ -46,6 +46,14 @@ async function main() {
   // CROSSMALL同期（2時間ごと: 注文蓄積 + 在庫 + 商品情報）
   cron.schedule('0 */2 * * *', () => crossmall.syncAll());
 
+  // 日次ヘルスチェック (毎朝9時 JST): Yahoo 実質稼働状態を Telegram に通知。
+  // breaker 発動見落とし事故 (2026-07-13 の 11.5h 停止) への対策。
+  cron.schedule('0 9 * * *', () => {
+    scraping.sendDailyHealthCheck().catch(e =>
+      console.error('[daily-health-check] エラー:', e.message)
+    );
+  }, { timezone: 'Asia/Tokyo' });
+
   const app = express();
   app.get('/health', (req, res) => {
     res.json({
