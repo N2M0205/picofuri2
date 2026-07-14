@@ -74,18 +74,30 @@ class ScrapingService {
     if (typeof this._breakerReminderTimer.unref === 'function') this._breakerReminderTimer.unref();
   }
 
+  // 運用系通知 (breaker発動 / 30分後リマインダー / 日次ヘルスチェック) を
+  // 2 経路に配信する:
+  //   ① Claude 監視 bot (~/.claude-notify.env、既存)
+  //   ② picofuri2_bot の owner 単独 (chat_id=8656466812、新設)
+  // 意図的に TELEGRAM_CHAT_IDS は使わず owner のみ hardcode。仕入通知先の
+  // koba (5971882796) への運用通知漏れを構造的に防ぐため。
+  // 片方の失敗は他方に影響させない (二重送信で到達確実性優先)。
   async _sendYahooAutoDisableNotification(text) {
+    await this._sendViaClaudeNotifyBot(text);
+    await this._sendViaPicofuriBotOwner(text);
+  }
+
+  async _sendViaClaudeNotifyBot(text) {
     try {
       const credPath = path.join(os.homedir(), '.claude-notify.env');
       if (!fs.existsSync(credPath)) {
-        console.warn('[ScrapingService] ~/.claude-notify.env 不在、Telegram通知スキップ');
+        console.warn('[ScrapingService] ~/.claude-notify.env 不在、Claude bot 通知スキップ');
         return;
       }
       const content = fs.readFileSync(credPath, 'utf-8');
       const tokenMatch = content.match(/CLAUDE_NOTIFY_BOT_TOKEN=([^\n\r]+)/);
       const chatMatch  = content.match(/CLAUDE_NOTIFY_CHAT_ID=([^\n\r]+)/);
       if (!tokenMatch || !chatMatch) {
-        console.warn('[ScrapingService] .claude-notify.env の資格情報不備、Telegram通知スキップ');
+        console.warn('[ScrapingService] .claude-notify.env の資格情報不備、Claude bot 通知スキップ');
         return;
       }
       await axios.post(
@@ -94,7 +106,24 @@ class ScrapingService {
         { timeout: 10000 }
       );
     } catch (e) {
-      console.error('[ScrapingService] Yahoo自動停止 Telegram通知エラー:', e.message);
+      console.error('[ScrapingService] Claude bot 通知エラー:', e.message);
+    }
+  }
+
+  async _sendViaPicofuriBotOwner(text) {
+    try {
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      if (!token) {
+        console.warn('[ScrapingService] TELEGRAM_BOT_TOKEN 未設定、picofuri2_bot 通知スキップ');
+        return;
+      }
+      await axios.post(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        { chat_id: '8656466812', text },
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      console.error('[ScrapingService] picofuri2_bot 通知エラー:', e.message);
     }
   }
 

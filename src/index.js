@@ -38,10 +38,19 @@ async function main() {
   }, 90000);
 
   // 階層別定期スキャン (各 tier は独立ロック、Cold の長時間中でも Hot が並列可)
+  // cron の :00 分ちょうどに複数 tier + CROSSMALL 同期が同時発火して Yahoo 429
+  // を踏む問題 (2026-07-13 に24h内3発動) を緩和するため、Cold/Warm/StarredOos
+  // に固定 jitter を導入する。Hot は毎分・軽量のため対象外。
+  const jitterMs = { warm: 8000, cold: 15000, starredOos: 22000 };
+  const scheduleWithJitter = (min, tier) => {
+    cron.schedule(cronForMin(min), () => {
+      setTimeout(() => scraping.runScan({ tier }), jitterMs[tier] || 0);
+    });
+  };
   cron.schedule(cronForMin(hotMin), () => scraping.runScan({ tier: 'hot' }));
-  cron.schedule(cronForMin(warmMin), () => scraping.runScan({ tier: 'warm' }));
-  cron.schedule(cronForMin(coldMin), () => scraping.runScan({ tier: 'cold' }));
-  cron.schedule(cronForMin(starredOosMin), () => scraping.runScan({ tier: 'starredOos' }));
+  scheduleWithJitter(warmMin, 'warm');
+  scheduleWithJitter(coldMin, 'cold');
+  scheduleWithJitter(starredOosMin, 'starredOos');
 
   // CROSSMALL同期（2時間ごと: 注文蓄積 + 在庫 + 商品情報）
   cron.schedule('0 */2 * * *', () => crossmall.syncAll());
