@@ -173,3 +173,65 @@
   - 将来の類似事例で本知見の妥当性を検証する
 
 ---
+
+### [2026-07-13 11:45] feat/yahoo-breaker-reminder マージ後の観察期間開始
+
+- **種別**: ✅仮定して進行（観察開始・記録）
+- **目的**: `feat/yahoo-breaker-reminder` (30分後リマインダー + 日次9時ヘルスチェック) が
+  数日単位で正しく機能することを確認する
+- **観察開始日時**: 2026-07-13 11:45 JST
+- **観察終了の目安**: 次回オーナーからの確認依頼時、または breaker 発動が
+  実際に発生した際（発動→リマインダー到達までを一連で確認できるタイミング）
+- **ベースライン (観察開始時点)**:
+  - PM2 status=online, pid=3844641, uptime≈5分（2026-07-13 11:40 JST restart 直後）
+  - 現在 breaker 発動回数: **0回**（in-memory `yahooAutoDisabled=false`）
+  - 直近1時間の 429検出: **0件**（`node scripts/check-yahoo-breaker.js --hours 1` で確認）
+  - Yahoo 実質稼働状態: **正常**（YAHOO_SCRAPING_ENABLED=true かつ !yahooAutoDisabled）
+- **cron 登録状態**:
+  - 日次ヘルスチェックは **node-cron による in-process スケジュール** で登録
+    （`src/index.js:50-55`, `cron.schedule('0 9 * * *', ..., { timezone: 'Asia/Tokyo' })`）
+  - system crontab には登録なし（`crontab -l` は既存の yahoo-ratelimit-watch.sh のみ）
+  - node-cron はプロセス起動時に登録されるため、restart で反映済（コードロード検証で
+    `sendDailyHealthCheck` / `_scheduleBreakerReminder` メソッドが存在することを確認）
+- **明日 (2026-07-14) 9:00 JST の確認方法**:
+  - Telegram に「☀️ 朝の稼働確認: Yahoo正常稼働中」または
+    「⚠️ 朝の稼働確認: Yahoo停止中」のメッセージが到達するか
+  - `logs/out.log` に `[ScrapingService] ☀️ ...` または `⚠️ ...` の1行が
+    2026-07-14 09:00 頃に記録されるか
+- **リマインダー機能の確認方法**:
+  - 実 breaker 発動待ち。発動時、初回通知の30分後にリマインダーが到達するか
+  - もし観察期間中に breaker が発動しなかった場合、テストスクリプト
+    `scripts/test-yahoo-breaker-reminder.js` の再実行で回帰確認可能
+- **影響範囲**: 記録のみ、コード・DB・環境変数変更なし
+
+---
+
+### [2026-07-14 16:05] OR 構文 (Phase 1・案A) の設計確定
+
+- **種別**: ✅仮定して進行（設計承認記録、実装は保留）
+- **内容**:
+  - フリマウォッチ調査で判明した「`｜` OR 記法」を picofuri2 に導入する
+    設計の Phase 1 (案A) をオーナー承認済み。実装着手は Yahoo 再開判断
+    (canary 3連続200 確定) 後
+  - 仕様: `Keyword.keyword` 単一フィールドに `｜`/`|` 区切りでバリアント
+    列挙 (`トイラボ｜ToyLaBO`)。DB スキーマ変更なし、既存226 kw は無変更で
+    動作継続
+  - 実装スコープ (承認済み):
+    1. `FilterService.matchesKeyword` に OR 分岐追加 (~7行)
+    2. Task 3-b 短縮スクリプトの tokenize に `｜` split 前処理追加 (~5行)
+    3. `test-matches-keyword.js` に OR ケース追加
+  - 検索側の設計: **アプローチ (b) を採用** = 「search=先頭バリアント/filter
+    =全バリアント」。**Yahoo 追加リクエスト増なし**、案Z (canary復帰待ち)
+    と完全独立
+  - 遡及適用候補は 6 組確定 (BACKLOG 参照)
+- **理由**:
+  - Win 版比較で 8 組以上の同SKU統合作業を繰り返した経緯を根本解決する
+    構造的な仕組み
+  - 案A (単一フィールド) は今日発生した `Keywords_backup` 孤立事故のような
+    DB migration リスクを回避する現実解
+  - アプローチ (b) 採用により Yahoo 側 IP ペナルティを増悪させない
+- **実装トリガー**: canary 3連続200 (17:00 想定) → Yahoo 再開判断 → 続けて
+  OR 構文 Phase 1 実装ブランチ切り
+- **影響範囲**: 記録のみ、コード・DB 変更なし
+
+---
