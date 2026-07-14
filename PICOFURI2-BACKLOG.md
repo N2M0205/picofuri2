@@ -99,6 +99,23 @@
 
 ## ✨ 機能追加
 
+- **OR構文（キーワード内バリエーション指定、Phase 1・案A）**
+  - 2026-07-14 設計承認済み、実装着手は Yahoo 再開判断 (canary 3連続200 確定) 後
+  - 仕様: `Keyword.keyword` に `｜` (全角) または `|` (半角) 区切りで
+    バリアントを列挙可 (例: `トイラボ｜ToyLaBO`)。DBスキーマ変更なし
+  - 実装:
+    1. `FilterService.matchesKeyword` に OR 分岐追加 (~7行)、
+       各バリアントで既存 `_matchesKeywordSingle` を `.some()` OR 判定
+    2. Task 3-b 短縮スクリプト (`apply-keyword-shortening-*.js`) の
+       tokenize に `｜` split 前処理を追加 (~5行)
+    3. `test-matches-keyword.js` に OR ケースを追加
+  - 検索 API 側: **アプローチ (b) を採用** = search は先頭バリアントのみ、
+    filter で全バリアント OR 判定。**Yahoo 追加リクエストなし**、案Zと独立
+  - 遡及適用候補: トイラボ/ToyLaBO・セノッピー チュアブル/SENOPPY CHEWABLE・
+    ルックルック イヌリン系・nico/ニコ 石鹸・バルクス/VALX・デイリーワン系
+    (6組)。実装後にオーナー承認で段階適用
+  - 将来 Phase 2: Mercari のみでアプローチ (a) (バリアント毎に個別 API 呼び
+    出し + deduplicate) を検討、Yahoo は Phase 2 対象外
 - **階層化スキャン Hot/Warm/Cold/欠品中**（設計確定済み・最優先の本命、
   PICOFURI2-BUSINESS-RULES.md 参照。Yahoo構成確定後に実装着手予定）
 - 全商品登録150SKU化（現在77件、残り約73件）
