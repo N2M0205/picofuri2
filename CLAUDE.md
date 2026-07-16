@@ -153,16 +153,20 @@ git diff main  # 差分をオーナーに提示
 
 ---
 
-## 📄 報告の使い分け（Google Docs vs チャット直接）
+## 📄 報告の使い分け（Notion vs チャット直接）
 
 - 長文の実装結果・調査レポート（一晩稼働分析、複数ファイルにまたがる調査等）
-  → scripts/report-to-docs.js で Docs に記載し、チャットには
-  「Docsに記載済み」+ 要約2-3行のみを返す
+  → scripts/report-to-notion.js で Notion データベースに新規ページ作成し、
+  チャットには「Notionに記載済み」+ 要約2-3行のみを返す
+  - 呼び出し例: `node scripts/report-to-notion.js "<title>" <category> <body-file>`
+  - category: `Yahoo対応|OR構文設計|SKU整理|通知品質|システム運用|Win版比較|その他`
+  - オプション: `--status=進行中|完了|保留` (デフォルト完了)、`--branch=<name>`
+- 旧 scripts/report-to-docs.js は 2026-07-16 に Notion へ移行のため廃止 (DEPRECATED)
 - 短い確認質問（判断領域分類ルールに基づく停止確認、Q1/Q2形式の分岐選択）
   → 従来通りチャット/Telegramで直接やり取りする
 - 中断・完走時の状態通知 → 既存のStop/Notificationフックが担当（変更不要）
 - 判断に迷う場合は、まず短く報告してオーナーの反応を見てから
-  詳細をDocsに書くかどうか決めてよい
+  詳細をNotionに書くかどうか決めてよい
 
 ---
 
