@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// DEPRECATED 2026-07-16: Notionへ移行済み。report-to-notion.js参照
+// (Google Docs「picofuri2 logs」がファイルサイズ超過でチャット読み取り不可となったため)
 // scripts/report-to-docs.js
 // 長文の実装結果・調査レポートを Google Docs に追記し、Telegram にリンク+要約を通知する。
 //
