@@ -304,17 +304,14 @@ class ScrapingService {
         continue;
       }
 
-      // 3. 過剰在庫スキップ（25日超）
-      if (product && this.filter.isOverstock(product.stock, product.sales28)) {
-        this.stats.filtered++;
-        continue;
-      }
-
-      // 4. DB重複チェック（既出は通知しない）
+      // 3. DB重複チェック（既出は通知しない）
       const existing = await DetectedItem.findOne({ where: { itemId: item.id } });
       if (existing) continue;
 
-      // 5. 新規登録（findOrCreate回避でSQLITE_BUSY対策）
+      // 4. 新規登録（findOrCreate回避でSQLITE_BUSY対策）
+      //    過剰在庫でも DetectedItem は必ず作成し、市場観測データとして残す。
+      //    通知抑止は下の 5. で行う (以前は create より前で continue していたため
+      //    「Mercari に出品はあるが 0件検知」が構造的に発生していた、2026-07-30 修正)
       let detected;
       try {
         detected = await DetectedItem.create({
@@ -332,6 +329,12 @@ class ScrapingService {
       } catch (err) {
         if (err.name === 'SequelizeUniqueConstraintError') continue;
         throw err;
+      }
+
+      // 5. 過剰在庫は通知抑止 (DetectedItem は残す、notified=false のまま)
+      if (product && this.filter.isOverstock(product.stock, product.sales28)) {
+        this.stats.filtered++;
+        continue;
       }
 
       // 6. 通知キャップチェック（1スキャン全体で NOTIFY_CAP_PER_SCAN 件まで）
