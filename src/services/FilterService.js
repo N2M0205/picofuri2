@@ -9,17 +9,22 @@ class FilterService {
   // ========== タイトルフィルタ（検索結果の事前絞り込み）==========
   // 全角英数→半角 / 正規化 / AND判定 / フレーズ一致
   //
-  // モード切替 (env var):
-  //   MATCHES_KEYWORD_MODE=and-full        (デフォルト、現状維持: 有効tokenを全 AND判定)
-  //   MATCHES_KEYWORD_MODE=first-n-tokens  (先頭N tokenのみAND判定、案E-1)
-  //   MATCHES_KEYWORD_FIRST_N=3            (first-n-tokens モード時のN、デフォルト3)
+  // モード決定の優先順位:
+  //   1) env MATCHES_KEYWORD_MODE=first-n-tokens が set → 全 tier で first-n
+  //      (既存 dry-run/検証用のグローバル override、後方互換)
+  //   2) opts.tier === 'cold' → first-n-tokens
+  //      (2026-07-30 追加、Cold は Mercari 側総ヒット数が少なく AND-full だと
+  //       表記ゆれで 0 通過になりがち → 先頭N のみで通過率を上げる)
+  //   3) それ以外 (Hot/Warm/StarredOos) → and-full (デフォルト、現状維持)
+  //
+  //   MATCHES_KEYWORD_FIRST_N=3 (first-n モード時の N、デフォルト 3)
   //
   // 案E-1 の狙い:
   //   Case D 検証で「Mercariは緩い部分マッチ / filter は AND完全一致」の非対称が判明。
   //   短縮 (案A) の後もまだ弾かれ得るケースを救済するため、
   //   先頭N tokenのみを AND対象とし通過率を上げる。
   //   fallback のフレーズ一致は両モードで維持 (安全網)。
-  matchesKeyword(title, keyword) {
+  matchesKeyword(title, keyword, opts = {}) {
     const normalize = str => str
       .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
       .replace(/[+＋]/g, 'プラス')
@@ -38,9 +43,11 @@ class FilterService {
     if (words.length === 0) return true;
 
     // モード判定
-    const mode = process.env.MATCHES_KEYWORD_MODE || 'and-full';
+    // env override > tier=cold > and-full の優先順位
+    const envMode = process.env.MATCHES_KEYWORD_MODE;
+    const useFirstN = envMode === 'first-n-tokens' || opts.tier === 'cold';
     const firstN = parseInt(process.env.MATCHES_KEYWORD_FIRST_N || '3', 10);
-    const wordsToMatch = mode === 'first-n-tokens' ? words.slice(0, firstN) : words;
+    const wordsToMatch = useFirstN ? words.slice(0, firstN) : words;
 
     // AND判定 (モードに応じた対象トークン)
     if (wordsToMatch.every(w => normTitle.includes(w))) return true;
