@@ -292,8 +292,11 @@ class ScrapingService {
 
     for (const item of items) {
       // 1. タイトルフィルタ（無関係な検索結果の事前足切り）
-      //    tier を渡し、Cold は先頭N tokenのみで判定 (2026-07-30 追加、表記ゆれ吸収)
-      if (!this.filter.matchesKeyword(item.title, keyword.keyword, { tier })) {
+      //    tier=cold のときは先頭N tokenのみで判定 (2026-07-30 追加、表記ゆれ吸収)
+      //    ただし keywordId が opt-out リストに含まれる SKU 群 (N organic Vie 系等)
+      //    は attribution 問題回避のため and-full 維持 (2026-08-11 追加)
+      if (!this.filter.matchesKeyword(item.title, keyword.keyword,
+          { tier, keywordId: keyword.id })) {
         this.stats.filtered++;
         continue;
       }

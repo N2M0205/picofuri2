@@ -1,5 +1,6 @@
 const ngWords = require('../config/ngWords.js');
 const layerAConfig = require('../config/layerA.json');
+const { FIRST_N_OPT_OUT_KEYWORD_IDS } = require('../config/matchesKeywordFirstNOptOut.js');
 
 // グローバル除外キーワード（可変）
 const GLOBAL_EXCLUDE_KEYWORDS = ['空箱', 'サンプル'];
@@ -12,10 +13,14 @@ class FilterService {
   // モード決定の優先順位:
   //   1) env MATCHES_KEYWORD_MODE=first-n-tokens が set → 全 tier で first-n
   //      (既存 dry-run/検証用のグローバル override、後方互換)
-  //   2) opts.tier === 'cold' → first-n-tokens
+  //   2) opts.tier === 'cold' AND opts.keywordId が opt-out リストに無い →
+  //      first-n-tokens
   //      (2026-07-30 追加、Cold は Mercari 側総ヒット数が少なく AND-full だと
   //       表記ゆれで 0 通過になりがち → 先頭N のみで通過率を上げる)
-  //   3) それ以外 (Hot/Warm/StarredOos) → and-full (デフォルト、現状維持)
+  //      (2026-08-11 opt-out 追加: 4トークン以上の SKU 群 13キーワードは同じ
+  //       先頭3 tokenを共有し attribution 問題を起こすため、and-full を維持)
+  //   3) それ以外 (Hot/Warm/StarredOos、opt-out 済み Cold) → and-full
+  //      (デフォルト、現状維持)
   //
   //   MATCHES_KEYWORD_FIRST_N=3 (first-n モード時の N、デフォルト 3)
   //
@@ -43,9 +48,10 @@ class FilterService {
     if (words.length === 0) return true;
 
     // モード判定
-    // env override > tier=cold > and-full の優先順位
+    // env override > (tier=cold AND opt-out 外) > and-full の優先順位
     const envMode = process.env.MATCHES_KEYWORD_MODE;
-    const useFirstN = envMode === 'first-n-tokens' || opts.tier === 'cold';
+    const optedOut = opts.keywordId != null && FIRST_N_OPT_OUT_KEYWORD_IDS.has(opts.keywordId);
+    const useFirstN = envMode === 'first-n-tokens' || (opts.tier === 'cold' && !optedOut);
     const firstN = parseInt(process.env.MATCHES_KEYWORD_FIRST_N || '3', 10);
     const wordsToMatch = useFirstN ? words.slice(0, firstN) : words;
 
