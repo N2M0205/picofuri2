@@ -10,6 +10,8 @@
 //
 // 対応: 影響が大きい 4 グループ 13 keyword を first-n から除外し、
 //   従来の and-full マッチに戻す。
+//   (2026-08-11 追記) 続く overlap check で id=111 も同基準に該当することが
+//   判明したため追加 → 計 14 keyword を opt-out 対象とする。
 //
 // 除外しない (first-n 対象に維持):
 //   - id=189 「Ｎ organic」        : Ｎ organic 全般網羅目的、意図的に広範
@@ -19,8 +21,10 @@
 'use strict';
 
 const FIRST_N_OPT_OUT_KEYWORD_IDS = new Set([
-  // N organic Vie/Basic 個別 SKU 5件
-  139, 140, 141, 151, 168,
+  // N organic Vie/Basic 個別 SKU 6件 (id=111 は 2026-08-11 追加、
+  // 「N organic Vie エヌオーガニック」で 4-token、先頭 3 token「N organic Vie」
+  // が Vie 系他 SKU と共通のため attribution 問題を起こしていた)
+  111, 139, 140, 141, 151, 168,
   // ラフドット (Sweet Bouquet / Relax Verbena / Pure Musk 3 SKU)
   131, 177, 178,
   // ユリイロ (Cherry-adjacent + White Lily / Body Oil 系 3件)

@@ -30,9 +30,10 @@ const titleFullMatch = 'N organic Vie モイストリッチ 100ml 新品';      
 const titleFirstNOnly = 'N organic Vie バリアクリーム 47g 新品';        // first-n=true, and-full=false
 const titleNoMatch = 'ドクターワンデル プラス 30ml';                    // 両方 false
 
-console.log('[baseline] opt-out set contains 13 IDs:',
+console.log('[baseline] opt-out set contains 14 IDs:',
   FIRST_N_OPT_OUT_KEYWORD_IDS.size);
-assert(FIRST_N_OPT_OUT_KEYWORD_IDS.size === 13, 'opt-out set size = 13');
+assert(FIRST_N_OPT_OUT_KEYWORD_IDS.size === 14, 'opt-out set size = 14');
+assert(FIRST_N_OPT_OUT_KEYWORD_IDS.has(111), '  contains id=111 (N organic Vie エヌオーガニック、2026-08-11 追加)');
 assert(FIRST_N_OPT_OUT_KEYWORD_IDS.has(139), '  contains id=139 (N organic Vie モイストリッチ)');
 assert(FIRST_N_OPT_OUT_KEYWORD_IDS.has(150), '  contains id=150 (SHIRORU クリスタルホイップ)');
 assert(!FIRST_N_OPT_OUT_KEYWORD_IDS.has(189), '  excludes id=189 (Ｎ organic、意図的に維持)');
