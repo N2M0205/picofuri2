@@ -89,6 +89,25 @@ const CrossmallSale = sequelize.define('CrossmallSale', {
   ]
 });
 
+// ==================== 在庫アラート (2026-08-26 追加、feat/telegram-inventory-alert) ====================
+// SKU 単位の「最新チェック結果 + 最終 Telegram 送信時刻」を 1 行/SKU で保持する。
+// 「新たに 🔴 遷移した SKU」の検知 = 前回 tier vs 今回 tier の比較
+// 「同日重複送信防止」= lastTelegramSentAt を realtime_dedup_hours (デフォルト 12h) で比較
+const InventoryAlertHistory = sequelize.define('InventoryAlertHistory', {
+  skuCode: {
+    type: DataTypes.STRING,
+    primaryKey: true,
+  },
+  tier: {
+    type: DataTypes.STRING(10),
+    allowNull: false,
+    validate: { isIn: [['red', 'yellow', 'green']] },
+  },
+  stockDays: { type: DataTypes.FLOAT, allowNull: true }, // 判定時点の在庫日数 (デバッグ・履歴確認用)
+  checkedAt: { type: DataTypes.DATE, allowNull: false },
+  lastTelegramSentAt: { type: DataTypes.DATE, allowNull: true },
+});
+
 // 初期キーワードデータ
 const INITIAL_KEYWORDS = [
   { keyword: 'トイラボ',              platforms: ['mercari', 'yahoo_flea'] },
@@ -158,6 +177,10 @@ async function initDB() {
     ON CrossmallSales (orderNumber, lineNo)
   `);
 
+  // 在庫アラート履歴テーブル (2026-08-26 追加、feat/telegram-inventory-alert)
+  // 既存テーブルには一切影響しない、独立テーブル
+  await InventoryAlertHistory.sync({ alter: true });
+
   // 既存Keywordレコードの新カラムにデフォルト値を補完（NULL対応）
   await Keyword.update(
     { minPrice: 0, maxPrice: 999999, globalExcludeEnabled: true },
@@ -178,4 +201,12 @@ async function initDB() {
   console.log('[DB] 初期化完了');
 }
 
-module.exports = { sequelize, Keyword, DetectedItem, CrossmallProduct, CrossmallSale, initDB };
+module.exports = {
+  sequelize,
+  Keyword,
+  DetectedItem,
+  CrossmallProduct,
+  CrossmallSale,
+  InventoryAlertHistory,
+  initDB,
+};

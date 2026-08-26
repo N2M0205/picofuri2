@@ -1,0 +1,480 @@
+// Telegram 在庫アラートのコアロジック
+// (2026-08-26 実装、feat/telegram-inventory-alert)
+//
+// 設計: 指示書 v2 に基づく確定仕様。詳細は
+//   - src/config/inventoryAlert.json (閾値・重み・cron 設定)
+//   - INVENTORY-ALERT-FACT-CHECK-20260826.md (事実確認)
+// を参照。
+//
+// 責務:
+//   1. sales1 / sales14 を CrossmallSale から算出 (既存 _updateProductStats は無変更)
+//   2. 日販ペース = 重み付き平均 (0.15·s1 + 0.30·s7/7 + 0.25·s14/14 + 0.30·s28/28)
+//   3. 在庫日数 = stock / 日販ペース (stock=0 は 0 日 = 🔴 に振る、日販=0 は判定不可)
+//   4. 3 段階 tier 判定 (red/yellow/green)
+//   5. 推奨仕入数 = (14 + 5) × 日販ペース − 現在庫、負値は 0
+//   6. 鮮度判定: lastSyncedAt から 4h 超過で ⚠️
+//   7. 判定対象 SKU の絞り込み (crossmallItemCode 必須, master 有, stock>=0, 日販>0 or stock=0)
+//   8. InventoryAlertHistory との突き合わせで「新規 🔴 遷移」検知 + 同日重複防止
+//   9. Telegram broadcast (NotificationService.sendTelegram)
+//  10. HTML ダッシュボード用のデータ構造を返す
+
+'use strict';
+
+const { Op } = require('sequelize');
+const path = require('path');
+const fs = require('fs');
+const {
+  sequelize, Keyword, CrossmallProduct, CrossmallSale, InventoryAlertHistory,
+} = require('../models/index.js');
+const NotificationService = require('./NotificationService.js');
+const config = require('../config/inventoryAlert.json');
+
+// ==================== 純関数 (単体テスト対象) ====================
+
+/**
+ * 日販ペースの重み付き平均を返す。
+ * 定義: 0.15*(sales1/1) + 0.30*(sales7/7) + 0.25*(sales14/14) + 0.30*(sales28/28)
+ * (指示書 v2 で確定。配分値は config.sales_weights から差替可)
+ * @param {{sales1:number, sales7:number, sales14:number, sales28:number}} sales
+ * @param {{d1:number, d7:number, d14:number, d28:number}} weights
+ * @returns {number}
+ */
+function calcDailySalesPace(sales, weights) {
+  const s1  = (sales.sales1  ?? 0);
+  const s7  = (sales.sales7  ?? 0);
+  const s14 = (sales.sales14 ?? 0);
+  const s28 = (sales.sales28 ?? 0);
+  return weights.d1  * (s1  / 1)
+       + weights.d7  * (s7  / 7)
+       + weights.d14 * (s14 / 14)
+       + weights.d28 * (s28 / 28);
+}
+
+/**
+ * 在庫日数 = stock / dailyPace (dailyPace=0 は Infinity、stock<=0 は 0)
+ */
+function calcStockDaysFromPace(stock, dailyPace) {
+  if (stock == null) return null;
+  if (stock <= 0) return 0;
+  if (dailyPace == null || dailyPace <= 0) return Infinity;
+  return stock / dailyPace;
+}
+
+/**
+ * 在庫日数 → 3 段階 tier
+ *   ≤ red_max_days      → 'red'
+ *   ≤ yellow_max_days   → 'yellow'
+ *   それ以外 (Infinity 含む) → 'green'
+ */
+function classifyTier(stockDays, thresholds) {
+  if (stockDays == null) return null;
+  if (stockDays <= thresholds.red_max_days) return 'red';
+  if (stockDays <= thresholds.yellow_max_days) return 'yellow';
+  return 'green';
+}
+
+/**
+ * 推奨仕入数 = (target + leadTime) × dailyPace − stock、負値は 0 に切り下げ
+ * stock=0 の場合、dailyPace=0 の可能性が高い (計算スキップされる) が、
+ * 数式定義上は 0 を返す (dailyPace=0 なら必要数不明、既存欠品通知の別軸で扱う)
+ */
+function calcRecommendedQty(stock, dailyPace, targetDays, leadTimeDays) {
+  if (dailyPace == null || dailyPace <= 0) return 0;
+  const raw = (targetDays + leadTimeDays) * dailyPace - (stock ?? 0);
+  return Math.max(0, Math.ceil(raw));
+}
+
+/**
+ * データ鮮度判定: lastSyncedAt から warnHours 超過なら false (要警告)
+ */
+function isFresh(lastSyncedAt, warnHours, now = new Date()) {
+  if (!lastSyncedAt) return false;
+  const hoursOld = (now.getTime() - new Date(lastSyncedAt).getTime()) / (1000 * 3600);
+  return hoursOld <= warnHours;
+}
+
+/**
+ * SKU が判定対象か。指示書 v2 の絞り込み条件を反映。
+ *   除外: crossmallItemCode 未設定 / CROSSMALL マスタ不在 / stock < 0 / 日販=0 かつ stock>0
+ *   含める: stock=0 は日販=0 でも 🔴 判定対象
+ */
+function isEligible(product, dailyPace) {
+  if (!product) return false;             // マスタ不在
+  if (product.stock < 0) return false;    // 負在庫
+  if (product.stock === 0) return true;   // 欠品 (指示: 対象に含める)
+  if (dailyPace <= 0) return false;       // 在庫はあるが日販=0 → 判定不可
+  return true;
+}
+
+// ==================== DB アクセス (テストは integration で) ====================
+
+/**
+ * 対象 SKU 群の (sales1, sales7, sales14, sales28) を一括集計する。
+ * CrossmallSale から orderDate ベースで日次カットを取り、SUM(amount) を返す。
+ * 既存 _updateProductStats と同じ day-boundary 方式 (orderDate >= today - N days)。
+ *
+ * @param {string[]} itemCodes
+ * @returns {Promise<Map<string, {sales1, sales7, sales14, sales28}>>}
+ */
+async function aggregateSalesForCodes(itemCodes) {
+  if (!itemCodes || itemCodes.length === 0) return new Map();
+
+  const now = new Date();
+  const dayNAgo = (n) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+  const day1  = dayNAgo(1);
+  const day7  = dayNAgo(7);
+  const day14 = dayNAgo(14);
+  const day28 = dayNAgo(28);
+
+  const rows = await CrossmallSale.findAll({
+    attributes: [
+      'itemCode',
+      [sequelize.fn('SUM', sequelize.literal(`CASE WHEN orderDate >= '${day1}'  THEN amount ELSE 0 END`)), 'sales1'],
+      [sequelize.fn('SUM', sequelize.literal(`CASE WHEN orderDate >= '${day7}'  THEN amount ELSE 0 END`)), 'sales7'],
+      [sequelize.fn('SUM', sequelize.literal(`CASE WHEN orderDate >= '${day14}' THEN amount ELSE 0 END`)), 'sales14'],
+      [sequelize.fn('SUM', sequelize.literal(`CASE WHEN orderDate >= '${day28}' THEN amount ELSE 0 END`)), 'sales28'],
+    ],
+    where: {
+      itemCode: { [Op.in]: itemCodes },
+      orderDate: { [Op.gte]: day28 },
+    },
+    group: ['itemCode'],
+    raw: true,
+  });
+
+  const m = new Map();
+  for (const r of rows) {
+    m.set(r.itemCode, {
+      sales1:  parseInt(r.sales1)  || 0,
+      sales7:  parseInt(r.sales7)  || 0,
+      sales14: parseInt(r.sales14) || 0,
+      sales28: parseInt(r.sales28) || 0,
+    });
+  }
+  return m;
+}
+
+// ==================== コア処理: 全対象 SKU の評価結果を作る ====================
+
+/**
+ * 全 keyword に紐づく SKU を評価し、各 SKU の判定結果を返す。DB 書き込みなし。
+ * 呼び出し元: runCheck (履歴更新+通知) / renderDashboard (最新結果表示)
+ */
+async function evaluateAllSkus(now = new Date()) {
+  const kws = await Keyword.findAll({
+    where: { isActive: true, crossmallItemCode: { [Op.not]: null } },
+    attributes: ['id', 'keyword', 'crossmallItemCode'],
+    raw: true,
+  });
+  const codes = [...new Set(kws.map(k => k.crossmallItemCode).filter(Boolean))];
+  if (codes.length === 0) return [];
+
+  const [products, salesMap] = await Promise.all([
+    CrossmallProduct.findAll({ where: { itemCode: { [Op.in]: codes } }, raw: true }),
+    aggregateSalesForCodes(codes),
+  ]);
+  const productMap = new Map(products.map(p => [p.itemCode, p]));
+
+  // SKU → 代表 keyword name (先頭 1 件を採用、複数 kw の場合は arbitary)
+  const skuToKwName = new Map();
+  for (const k of kws) {
+    if (!skuToKwName.has(k.crossmallItemCode)) {
+      skuToKwName.set(k.crossmallItemCode, k.keyword);
+    }
+  }
+
+  const results = [];
+  for (const code of codes) {
+    const product = productMap.get(code);
+    const sales = salesMap.get(code) || { sales1: 0, sales7: 0, sales14: 0, sales28: 0 };
+    // stock=0 の場合、日販ペース計算はスキップ (指示 v2)
+    const stock = product?.stock ?? 0;
+    const dailyPace = stock === 0
+      ? 0
+      : calcDailySalesPace(sales, config.sales_weights);
+
+    if (!isEligible(product, dailyPace)) continue;
+
+    const stockDays = calcStockDaysFromPace(stock, dailyPace);
+    const tier = classifyTier(stockDays, config.tier_thresholds);
+    const recommendedQty = calcRecommendedQty(
+      stock, dailyPace, config.target_stock_days, config.lead_time_days
+    );
+    const fresh = isFresh(product?.lastSyncedAt, config.freshness_warn_hours, now);
+
+    results.push({
+      skuCode: code,
+      skuName: skuToKwName.get(code) || code,
+      itemName: product?.itemName || null,
+      tier,
+      stock,
+      stockDays,
+      dailyPace,
+      recommendedQty,
+      sales,
+      lastSyncedAt: product?.lastSyncedAt || null,
+      fresh,
+    });
+  }
+  return results;
+}
+
+// ==================== .env / URL 読み取り ====================
+
+/**
+ * .env から特定キーの最新値を読み込む (process.env に依存しない、動的更新に対応)
+ */
+function readEnvValue(key) {
+  const envPath = path.join(__dirname, '..', '..', '.env');
+  try {
+    const text = fs.readFileSync(envPath, 'utf-8');
+    const re = new RegExp('^\\s*' + key + '=(.*)$', 'm');
+    const m = text.match(re);
+    return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : null;
+  } catch { return null; }
+}
+
+// ==================== Telegram メッセージ組み立て ====================
+
+function formatSkuLine(r, includeQty) {
+  const nameSrc = r.itemName || r.skuName;
+  const name = nameSrc.length > 40 ? nameSrc.slice(0, 40) + '…' : nameSrc;
+  const days = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
+  const qtyPart = includeQty ? `　｜　推奨${r.recommendedQty}個` : '';
+  const freshPart = r.fresh ? '' : '　⚠️4h以上前のデータ';
+  return `${name}　｜　${days}${qtyPart}${freshPart}`;
+}
+
+function buildDailyDigestMessage(results, tunnelUrl, now = new Date()) {
+  const reds = results.filter(r => r.tier === 'red');
+  const yellows = results.filter(r => r.tier === 'yellow');
+  const greens = results.filter(r => r.tier === 'green');
+
+  const dateStr = `${now.getMonth() + 1}/${now.getDate()}`;
+  const weekday = ['日','月','火','水','木','金','土'][now.getDay()];
+  const timeStr = now.toTimeString().slice(0, 5);
+
+  const lines = [];
+  lines.push(`📦 在庫アラート — ${dateStr}(${weekday}) ${timeStr}`);
+  lines.push(`🔴 ${reds.length}件　｜　🟡 ${yellows.length}件　｜　🟢 ${greens.length}件`);
+  lines.push('');
+  if (reds.length === 0) {
+    lines.push('🔴 緊急該当なし');
+  } else {
+    lines.push('🔴 緊急（3日以内）');
+    for (const r of reds) lines.push(formatSkuLine(r, true));
+  }
+  if (tunnelUrl) {
+    const token = readEnvValue(config.dashboard_token_env);
+    const url = `${tunnelUrl}${config.dashboard_path}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
+    lines.push('');
+    lines.push('▶️ 全件の詳細はこちら');
+    lines.push(url);
+  }
+  return lines.join('\n');
+}
+
+function buildNewlyRedMessage(r, tunnelUrl) {
+  const lines = [];
+  lines.push('🚨 新たに緊急在庫（🔴）に該当');
+  lines.push('');
+  const name = r.itemName || r.skuName;
+  lines.push(name);
+  const daysStr = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
+  const freshPart = r.fresh ? '' : '　⚠️4h以上前のデータ';
+  lines.push(`${daysStr}　｜　推奨仕入${r.recommendedQty}個${freshPart}`);
+  if (tunnelUrl) {
+    const token = readEnvValue(config.dashboard_token_env);
+    const url = `${tunnelUrl}${config.dashboard_path}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
+    lines.push('');
+    lines.push('▶️ 全件の詳細はこちら');
+    lines.push(url);
+  }
+  return lines.join('\n');
+}
+
+// ==================== HTML ダッシュボード ====================
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function renderDashboardHtml(results, generatedAt = new Date()) {
+  const reds = results.filter(r => r.tier === 'red');
+  const yellows = results.filter(r => r.tier === 'yellow');
+  const greens = results.filter(r => r.tier === 'green');
+
+  const renderRow = (r, includeQty) => {
+    const name = r.itemName || r.skuName;
+    const daysStr = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
+    const qty = includeQty ? `<td class="qty">推奨${r.recommendedQty}個</td>` : '<td></td>';
+    const fresh = r.fresh ? '' : '<span class="warn">⚠️4h以上前</span>';
+    return `<tr><td class="name">${escapeHtml(name)} ${fresh}</td><td class="days">${escapeHtml(daysStr)}</td>${qty}<td class="sku">${escapeHtml(r.skuCode)}</td></tr>`;
+  };
+
+  const section = (title, rows, includeQty) => {
+    if (rows.length === 0) return `<h2>${title}（0件）</h2>`;
+    return `<h2>${title}（${rows.length}件）</h2><table><thead><tr><th>商品</th><th>在庫日数</th><th>推奨</th><th>SKU</th></tr></thead><tbody>${rows.map(r => renderRow(r, includeQty)).join('')}</tbody></table>`;
+  };
+
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>ピコフリ2 在庫アラート</title>
+<style>
+body{font-family:-apple-system,'Hiragino Sans','Yu Gothic',sans-serif;max-width:960px;margin:20px auto;padding:0 12px;line-height:1.5}
+h1{border-bottom:2px solid #333;padding-bottom:6px}
+h2{margin-top:32px;padding:6px 10px;color:#fff}
+h2:has(+ table tr) + table{width:100%;border-collapse:collapse;margin-top:8px}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{border:1px solid #ddd;padding:6px 10px;text-align:left;font-size:14px}
+th{background:#f4f4f4}
+tbody tr:nth-child(odd){background:#fafafa}
+.red h2{background:#c0392b}
+.yellow h2{background:#e67e22}
+.green h2{background:#27ae60}
+.warn{color:#e67e22;font-size:12px;margin-left:4px}
+.days{white-space:nowrap;font-weight:600}
+.qty{white-space:nowrap;color:#2c3e50}
+.sku{font-family:monospace;font-size:12px;color:#7f8c8d}
+.summary{background:#ecf0f1;padding:10px 14px;border-radius:4px}
+</style></head><body>
+<h1>ピコフリ2 在庫アラート</h1>
+<div class="summary">🔴 ${reds.length}件　｜　🟡 ${yellows.length}件　｜　🟢 ${greens.length}件　｜　生成 ${escapeHtml(generatedAt.toLocaleString('ja-JP'))}</div>
+<div class="red">${section('🔴 緊急（3日以内）', reds, true)}</div>
+<div class="yellow">${section('🟡 注意（4〜13日）', yellows, true)}</div>
+<div class="green">${section('🟢 順調（14日以上）', greens, false)}</div>
+</body></html>`;
+}
+
+// ==================== 履歴更新 + 通知 (runCheck) ====================
+
+class InventoryAlertService {
+  constructor(notificationSvc) {
+    this.notification = notificationSvc || new NotificationService();
+    this.lastResults = null;      // 直近 evaluate 結果、ダッシュボード用にメモリキャッシュ
+    this.lastResultsAt = null;
+  }
+
+  /**
+   * 判定 + 履歴更新 + 「新規 🔴 遷移」検知 → リアルタイム Telegram 送信。
+   * crossmall.syncAll() 完了直後に呼ばれる想定。
+   */
+  async runCheck({ suppressTelegram = false } = {}) {
+    const now = new Date();
+    const results = await evaluateAllSkus(now);
+    this.lastResults = results;
+    this.lastResultsAt = now;
+
+    // 既存履歴を skuCode → row マップに
+    const codes = results.map(r => r.skuCode);
+    const historyRows = await InventoryAlertHistory.findAll({
+      where: { skuCode: { [Op.in]: codes } },
+      raw: true,
+    });
+    const historyMap = new Map(historyRows.map(h => [h.skuCode, h]));
+
+    const dedupHours = config.realtime_dedup_hours;
+    const dedupCutoff = new Date(now.getTime() - dedupHours * 3600 * 1000);
+    const tunnelUrl = readEnvValue(config.tunnel_url_env);
+
+    const newlyReds = [];
+    for (const r of results) {
+      const prev = historyMap.get(r.skuCode);
+      const prevTier = prev?.tier;
+      const isNewlyRed = r.tier === 'red' && prevTier !== 'red';
+      const sentRecently = prev?.lastTelegramSentAt
+        && new Date(prev.lastTelegramSentAt) > dedupCutoff;
+      if (isNewlyRed && !sentRecently) newlyReds.push(r);
+    }
+
+    // Telegram: 新規 🔴 を 1 件ずつ送信 (spec: 1 SKU=1 メッセージ)
+    let sentCount = 0;
+    if (!suppressTelegram) {
+      for (const r of newlyReds) {
+        try {
+          const msg = buildNewlyRedMessage(r, tunnelUrl);
+          await this.notification.sendTelegram(msg);
+          sentCount++;
+        } catch (e) {
+          console.error(`[InventoryAlert] realtime send err (${r.skuCode}): ${e.message}`);
+        }
+      }
+    }
+
+    // 履歴 upsert (全 SKU、送信有無に関わらず tier/checkedAt を更新)
+    // 送信された SKU のみ lastTelegramSentAt を更新
+    const sentSkuSet = new Set(newlyReds.map(r => r.skuCode));
+    for (const r of results) {
+      const prev = historyMap.get(r.skuCode);
+      await InventoryAlertHistory.upsert({
+        skuCode: r.skuCode,
+        tier: r.tier,
+        stockDays: Number.isFinite(r.stockDays) ? r.stockDays : null,
+        checkedAt: now,
+        lastTelegramSentAt: sentSkuSet.has(r.skuCode)
+          ? now
+          : (prev?.lastTelegramSentAt || null),
+      });
+    }
+
+    console.log(`[InventoryAlert] runCheck: 対象 ${results.length}SKU / 新規🔴 ${newlyReds.length}件 / 送信 ${sentCount}件`);
+    return { results, newlyReds, sentCount };
+  }
+
+  /**
+   * 8:00 日次ダイジェスト。1 メッセージにまとめて送信。
+   * 送信済み SKU の lastTelegramSentAt をまとめて更新 (以降 dedup ウィンドウ内の
+   * リアルタイム通知を抑止)。
+   */
+  async sendDailyDigest() {
+    const now = new Date();
+    const results = this.lastResults && this.lastResultsAt
+      && ((now.getTime() - this.lastResultsAt.getTime()) < 3 * 3600 * 1000)
+      ? this.lastResults
+      : await evaluateAllSkus(now);
+
+    const tunnelUrl = readEnvValue(config.tunnel_url_env);
+    const msg = buildDailyDigestMessage(results, tunnelUrl, now);
+    try {
+      await this.notification.sendTelegram(msg);
+    } catch (e) {
+      console.error(`[InventoryAlert] digest send err: ${e.message}`);
+      return { sentCount: 0, error: e.message };
+    }
+
+    // 全ての 🔴/🟡/🟢 SKU の lastTelegramSentAt を更新 (spec: 8:00 定時と同一 SKU の
+    // リアルタイム重複を防ぐ)
+    const codes = results.map(r => r.skuCode);
+    for (const code of codes) {
+      const existing = await InventoryAlertHistory.findByPk(code);
+      if (existing) {
+        await existing.update({ lastTelegramSentAt: now });
+      }
+    }
+
+    console.log(`[InventoryAlert] digest sent: 対象 ${results.length}SKU`);
+    return { sentCount: 1, resultsCount: results.length };
+  }
+}
+
+module.exports = {
+  InventoryAlertService,
+  // 純関数 (テスト用に export)
+  calcDailySalesPace,
+  calcStockDaysFromPace,
+  classifyTier,
+  calcRecommendedQty,
+  isFresh,
+  isEligible,
+  // 内部関数もテスト対象
+  aggregateSalesForCodes,
+  evaluateAllSkus,
+  buildDailyDigestMessage,
+  buildNewlyRedMessage,
+  renderDashboardHtml,
+  readEnvValue,
+};
