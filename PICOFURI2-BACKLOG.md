@@ -96,6 +96,23 @@
       同じ観点で見直す作業がセットで必要
   - 決定事項: Task 5 (24時間観察、2026-07-10 15:22完了見込み) 完了後に
     案2/案3 をまとめて検討する
+- テスト分離の根本対策 (2026-08-26 DetectedItems 消失インシデントを踏まえ)
+  - 現状 (feat/telegram-inventory-alert): SKIP_DB_ALTER env + production
+    プロセス自動検出の 2 段防御で「テスト時に本番 DB へ sync/alter しない」
+    ことを保証。しかし本番 DB ファイルを読み取り目的でも共用しているため、
+    テストが CrossmallSale 等に大量書き込みするとテスト後の削除ミスで
+    本番データを汚染しうるリスクは残る (今回 test-inventory-alert-integration.js
+    は synthetic itemCode 使用+teardown で削除しているが、規約依存)
+  - 案C (根本対策): DATABASE_PATH env で DB ファイルパスを完全 override 可能に
+    - 現行 src/models/index.js: `storage: path.join(__dirname, '../../database.sqlite')` を
+      `process.env.DATABASE_PATH || <default>` へ
+    - テストスクリプトは先頭で `process.env.DATABASE_PATH = '/tmp/test.sqlite'` 設定
+    - synthetic データを毎回 setup + teardown で完全隔離、本番 DB 一切不参照
+  - 影響範囲: models/index.js 1 行変更 + テストスクリプト全部の書き換え +
+    integration test の synthetic データ生成ロジック拡充 (Keyword/CrossmallProduct/
+    CrossmallSale を synthesized で用意する必要あり)
+  - 判断保留: 今回スコープ超え。案A+B で当面の安全性は担保できているため、
+    別途タスクとして検討
 
 ## ✨ 機能追加
 

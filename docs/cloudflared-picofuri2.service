@@ -1,0 +1,51 @@
+; Cloudflared quick tunnel を systemd 経由で自動起動するための unit ファイル
+; (2026-08-26 追加、feat/telegram-inventory-alert)
+;
+; オーナー選択肢:
+;   (A) 推奨: PM2 ecosystem.cloudflared.config.js 経由で管理
+;       (既に systemd 登録済の pm2-picofuri2.service が daemon を管理するため、
+;        追加の sudo 不要)
+;   (B) 独立 systemd unit として登録 (このファイル)
+;       (pm2 経由にせず、cloudflared 単体を systemd 直接管理したい場合)
+;
+; (B) のインストール手順 (要 sudo):
+;
+;   sudo cp docs/cloudflared-picofuri2.service /etc/systemd/system/
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable cloudflared-picofuri2
+;   sudo systemctl start cloudflared-picofuri2
+;   sudo systemctl status cloudflared-picofuri2
+;
+; ログは journalctl で確認:
+;   journalctl -u cloudflared-picofuri2 -f
+;
+; ⚠️ 実装上の注意: このファイルは wrapper (Node) 経由で cloudflared を起動する。
+;   URL を .env に自動反映するため。cloudflared を直接 systemd で起動すると
+;   URL が .env に反映されず、Telegram メッセージ内のリンクが不動 URL になる。
+
+[Unit]
+Description=cloudflared quick tunnel for picofuri2 (via Node wrapper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picofuri2
+Group=picofuri2
+WorkingDirectory=/home/picofuri2/picofuri2
+Environment=TUNNEL_LOCAL_URL=http://localhost:3001
+Environment=TUNNEL_ENV_KEY=PICOFURI_TUNNEL_URL
+Environment=TUNNEL_ENV_PATH=/home/picofuri2/picofuri2/.env
+Environment=CLOUDFLARED_BIN=/usr/local/bin/cloudflared
+Environment=NODE_ENV=development
+ExecStart=/usr/bin/node /home/picofuri2/picofuri2/scripts/cloudflared-tunnel-wrapper.js
+Restart=always
+RestartSec=5s
+; graceful shutdown 用: wrapper は SIGTERM を子プロセスに伝播する実装
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+StandardOutput=append:/home/picofuri2/picofuri2/logs/cloudflared-out.log
+StandardError=append:/home/picofuri2/picofuri2/logs/cloudflared-error.log
+
+[Install]
+WantedBy=multi-user.target
