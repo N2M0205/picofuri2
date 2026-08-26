@@ -1,0 +1,29 @@
+{
+  "target_stock_days": 14,
+  "lead_time_days": 5,
+  "tier_thresholds": {
+    "red_max_days": 3,
+    "yellow_max_days": 13
+  },
+  "sales_weights": {
+    "d1": 0.15,
+    "d7": 0.30,
+    "d14": 0.25,
+    "d28": 0.30
+  },
+  "freshness_warn_hours": 4,
+  "realtime_dedup_hours": 12,
+  "digest_cron": "0 8 * * *",
+  "digest_timezone": "Asia/Tokyo",
+  "dashboard_path": "/inventory-alert",
+  "dashboard_token_env": "INVENTORY_ALERT_TOKEN",
+  "tunnel_url_env": "PICOFURI_TUNNEL_URL",
+  "_notes": [
+    "target_stock_days=14, lead_time_days=5 は指示書 v2 で確定 (「推奨仕入数 = 19 × 日販ペース - 現在庫」)。",
+    "tier_thresholds.red_max_days=3 → 在庫日数 ≤ 3 が 🔴。yellow_max_days=13 → 4〜13 が 🟡、それ以外 (≥14) が 🟢。",
+    "sales_weights の 4 値は合計 1.0 (0.15 + 0.30 + 0.25 + 0.30) にすること。実装で合計チェック済み。",
+    "freshness_warn_hours=4 → lastSyncedAt から 4h 超過で ⚠️ データ鮮度注意を付与。同期間隔 2h × 2 = 4h という指示に基づく。",
+    "realtime_dedup_hours=12 → 同一 SKU が 12h 内に既に Telegram 送信済みならリアルタイム再通知をスキップ。8:00 定時通知と同日中の重複を防ぐため。",
+    "digest_cron / digest_timezone は毎朝 8:00 JST 定時ダイジェスト。既存 daily-health-check (9:00) と同 pattern。"
+  ]
+}

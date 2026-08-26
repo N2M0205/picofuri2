@@ -4,6 +4,12 @@ const express = require('express');
 const { initDB } = require('./models/index.js');
 const ScrapingService = require('./services/ScrapingService.js');
 const CrossmallService = require('./services/CrossmallService.js');
+const {
+  InventoryAlertService,
+  evaluateAllSkus,
+  renderDashboardHtml,
+} = require('./services/InventoryAlertService.js');
+const inventoryAlertConfig = require('./config/inventoryAlert.json');
 
 async function main() {
   console.log('=== ピコフリ2 起動中 ===');
@@ -14,6 +20,11 @@ async function main() {
   await scraping.initialize();
 
   const crossmall = new CrossmallService();
+  const inventoryAlert = new InventoryAlertService();
+  // syncAll 完了直後に在庫アラート判定を連結呼び出し (2026-08-26 追加)
+  //   → 「同期完了 → 最新データで判定 → 新規🔴あれば Telegram」の一連を 1 サイクルで実行
+  //   フック内の例外は CrossmallService 側の try/catch で吸収される
+  crossmall.onSyncComplete = () => inventoryAlert.runCheck();
 
   // 階層別スキャン間隔 (分単位、cron)。従来の SCRAPING_INTERVAL_SECONDS は廃止。
   const hotMin = parseInt(process.env.HOT_SCAN_INTERVAL_MINUTES) || 1;
@@ -63,6 +74,14 @@ async function main() {
     );
   }, { timezone: 'Asia/Tokyo' });
 
+  // 在庫アラート 8:00 定時ダイジェスト (2026-08-26 追加、feat/telegram-inventory-alert)
+  // cron 表記と timezone は config/inventoryAlert.json で調整可
+  cron.schedule(inventoryAlertConfig.digest_cron, () => {
+    inventoryAlert.sendDailyDigest().catch(e =>
+      console.error('[inventory-digest] エラー:', e.message)
+    );
+  }, { timezone: inventoryAlertConfig.digest_timezone });
+
   const app = express();
   app.get('/health', (req, res) => {
     res.json({
@@ -71,6 +90,25 @@ async function main() {
       stats: scraping.stats,
       uptime: process.uptime()
     });
+  });
+
+  // 在庫アラートダッシュボード (2026-08-26 追加)
+  // ?t=<token> パラメータで .env の INVENTORY_ALERT_TOKEN と照合、一致で HTML 返却、不一致は 403
+  // ダッシュボードは毎リクエストでフレッシュに evaluateAllSkus() → キャッシュなし
+  app.get(inventoryAlertConfig.dashboard_path, async (req, res) => {
+    const expected = process.env[inventoryAlertConfig.dashboard_token_env];
+    const given = req.query.t;
+    // constant-time compare 回避のため、単純比較で十分 (token は開発者管理・低頻度)
+    if (!expected || !given || expected !== given) {
+      return res.status(403).type('text/plain').send('forbidden');
+    }
+    try {
+      const results = await evaluateAllSkus(new Date());
+      res.type('text/html').send(renderDashboardHtml(results, new Date()));
+    } catch (e) {
+      console.error('[inventory-dashboard] エラー:', e.message);
+      res.status(500).type('text/plain').send('internal error');
+    }
   });
 
   const port = process.env.PORT || 3001;

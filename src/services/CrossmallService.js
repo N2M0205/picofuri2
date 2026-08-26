@@ -12,6 +12,11 @@ class CrossmallService {
     // Phase1で起動時setTimeout(syncOrders) と 2h cron(syncAll→syncOrders) が
     // 重複起動していた問題への対策
     this.isSyncing = false;
+    // syncAll 完了時のフック (2026-08-26 追加、feat/telegram-inventory-alert)
+    // 在庫アラート判定を「syncAll 完了直後」に連結するためのシンプルな public field。
+    // 未設定なら何もしない。設定は index.js 側で inventoryAlert.runCheck() を渡す。
+    // フック内の例外は sync 本体に影響させない (自身の try/catch で吸収)。
+    this.onSyncComplete = null;
   }
 
   // ===== 既存（変更なし）: 署名・HTTPリクエスト =====
@@ -383,6 +388,17 @@ class CrossmallService {
       }
 
       console.log('[CrossmallService] 同期完了');
+
+      // syncAll 完了フック: 在庫アラート判定などを連結呼び出し (2026-08-26 追加)
+      // 呼び出し順は「同期完了ログ後、次の同期サイクル前」の間の 1 回のみ。
+      // フック内例外は独立した try/catch で吸収し、sync 本体のログを汚さない。
+      if (this.onSyncComplete) {
+        try {
+          await this.onSyncComplete();
+        } catch (e) {
+          console.error('[CrossmallService] onSyncComplete エラー:', e.message);
+        }
+      }
     } catch (err) {
       console.error('[CrossmallService] 同期エラー:', err.message);
     }
