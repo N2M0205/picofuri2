@@ -23,11 +23,60 @@
 const { Op } = require('sequelize');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
 const {
   sequelize, Keyword, CrossmallProduct, CrossmallSale, InventoryAlertHistory,
 } = require('../models/index.js');
-const NotificationService = require('./NotificationService.js');
 const config = require('../config/inventoryAlert.json');
+
+// ==================== 独立 Telegram 送信 (2026-08-26 追加) ====================
+// 在庫アラートは @picofuri_admin_bot (キーワード管理と同一 bot) から送信する。
+// 既存 NotificationService.sendTelegram は @picofuri2_bot を使うため、
+// 混同を避けるため独立実装 (別トークン・別関数)。
+// polling プロセス (別ホスト・別 process) には一切干渉しない。
+//
+// 送信先 chat_ids は既存の TELEGRAM_CHAT_IDS (owner + koba) をそのまま流用。
+// TELEGRAM_ADMIN_ID (旧単一 chat_id 変数) は broadcast の後方互換 fallback として使う。
+//
+// トークンは INVENTORY_ALERT_BOT_TOKEN 環境変数から取る。未設定なら send は
+// no-op (WARN ログのみ)。
+class InventoryAlertTelegramClient {
+  constructor(opts = {}) {
+    // 環境変数はコンストラクタ時に snapshot (pm2 restart --update-env で反映)
+    this.token = opts.token || process.env.INVENTORY_ALERT_BOT_TOKEN;
+    this.chatIds = opts.chatIds
+      || InventoryAlertTelegramClient._parseChatIds(
+        process.env.TELEGRAM_CHAT_IDS,
+        process.env.TELEGRAM_ADMIN_ID,
+      );
+  }
+
+  static _parseChatIds(csv, fallbackSingle) {
+    if (csv && csv.trim()) return csv.split(',').map(s => s.trim()).filter(Boolean);
+    if (fallbackSingle && String(fallbackSingle).trim()) return [String(fallbackSingle).trim()];
+    return [];
+  }
+
+  // 使い勝手を NotificationService.sendTelegram に合わせる (spy 差し替え互換)。
+  // 全 chat_id へ順次配信、片方失敗しても他方は継続。
+  async sendTelegram(message) {
+    if (!this.token || this.chatIds.length === 0) {
+      console.warn('[InventoryAlert] Telegram token / chatIds 未設定、送信スキップ');
+      return;
+    }
+    for (const chatId of this.chatIds) {
+      try {
+        await axios.post(
+          `https://api.telegram.org/bot${this.token}/sendMessage`,
+          { chat_id: chatId, text: message },
+          { timeout: 10000 },
+        );
+      } catch (e) {
+        console.error(`[InventoryAlert] chat_id=${chatId} 送信エラー:`, e.response?.status, e.message);
+      }
+    }
+  }
+}
 
 // ==================== 純関数 (単体テスト対象) ====================
 
@@ -353,8 +402,12 @@ tbody tr:nth-child(odd){background:#fafafa}
 // ==================== 履歴更新 + 通知 (runCheck) ====================
 
 class InventoryAlertService {
-  constructor(notificationSvc) {
-    this.notification = notificationSvc || new NotificationService();
+  // 引数: sendTelegram(message) を持つ任意のオブジェクト (spy 差し替え可)。
+  //   省略時は @picofuri_admin_bot 経由の独立 client を作成する。
+  //   既存 test は notification オブジェクト (sendTelegram: async fn) を渡す想定、
+  //   同じシグネチャなのでそのまま spy 差し替え互換。
+  constructor(telegramClient) {
+    this.notification = telegramClient || new InventoryAlertTelegramClient();
     // 2026-08-26 レビュー指摘反映: evaluateAllSkus のキャッシュは廃止。
     //   理由: syncAll 間隔 (2h) より TTL が長いと、次の sync 完了データを見落として
     //         古いキャッシュを返す可能性があり「データ鮮度担保」の設計意図と矛盾。
@@ -365,8 +418,15 @@ class InventoryAlertService {
   /**
    * 判定 + 履歴更新 + 「新規 🔴 遷移」検知 → リアルタイム Telegram 送信。
    * crossmall.syncAll() 完了直後に呼ばれる想定。毎回フレッシュに評価する。
+   *
+   * INVENTORY_ALERT_DISABLED=true 設定時は入口で即 return し、履歴更新も評価も
+   * 一切行わない (2026-08-26 追加、bot 切り替え作業中の暫定無効化用)。
    */
   async runCheck({ suppressTelegram = false } = {}) {
+    if (process.env.INVENTORY_ALERT_DISABLED === 'true') {
+      console.log('[InventoryAlert] INVENTORY_ALERT_DISABLED=true: runCheck スキップ');
+      return { results: [], newlyReds: [], sentCount: 0, disabled: true };
+    }
     const now = new Date();
     const results = await evaluateAllSkus(now);
 
@@ -438,6 +498,10 @@ class InventoryAlertService {
    *   digest に実際に露出した SKU のみを「通知済み」扱いにする。
    */
   async sendDailyDigest() {
+    if (process.env.INVENTORY_ALERT_DISABLED === 'true') {
+      console.log('[InventoryAlert] INVENTORY_ALERT_DISABLED=true: sendDailyDigest スキップ');
+      return { sentCount: 0, disabled: true };
+    }
     const now = new Date();
     // キャッシュ廃止 (レビュー指摘反映): 毎回フレッシュに再評価
     const results = await evaluateAllSkus(now);
@@ -468,6 +532,7 @@ class InventoryAlertService {
 
 module.exports = {
   InventoryAlertService,
+  InventoryAlertTelegramClient,
   // 純関数 (テスト用に export)
   calcDailySalesPace,
   calcStockDaysFromPace,
