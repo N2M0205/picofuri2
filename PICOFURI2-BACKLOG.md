@@ -96,6 +96,33 @@
       同じ観点で見直す作業がセットで必要
   - 決定事項: Task 5 (24時間観察、2026-07-10 15:22完了見込み) 完了後に
     案2/案3 をまとめて検討する
+- **itemId race attribution 問題 (対象別 SKU 群の残存ペア)**
+  - 2026-08-11 案A opt-out (14 kw) + id=189 個別除外 4 語で主要案件は緩和済み。
+    以下 5 ペアが「別 SKU なのに同一 itemId で race attribution」される残存問題:
+    - id=68 「クレ ブラック」 × id=221 「クレムドアン ブラック 300g」 (68件/回)
+    - id=141 「N organic Vie ローション」 × id=189 「Ｎ organic」 (54件/回)
+    - id=209 「N organic Plenum」 × id=189 「Ｎ organic」 (74件/回)
+    - id=39 「プルースト クリーム」 × id=201 「プルーストクリーム2.0 30ｇ」 (33件/回)
+    - id=50 「ペプチア」 × id=206 「ペプチア 180粒」 (29件/回)
+  - 現状の攻撃面:
+    - DetectedItem.itemId は UNIQUE で行は 1 件だけ作成される (二重通知なし)
+    - しかし race 勝者 keyword の crossmallItemCode で利益計算されるため、
+      通知の利益率・在庫日数が本来の SKU と異なる
+    - 通知のタイトル・価格は正しいので現場運用上の誤発注リスクは限定的
+  - 実装検討 (2026-08-11 owner に提示、今回は範囲外):
+    - 案 P-1 (一致精度スコア方式): matchesKeyword を pass/fail でなく token 一致数
+      等のスコア返しに変更。race で勝った kw ではなく最高スコアの kw を選ぶ。
+      _processItems の並列モデル変更が必要、実装大
+    - 案 P-2 (SKU 単位 attribution テーブル): KeywordItemCandidate(itemId,
+      keywordId, matchScore) を先に集めてからスキャン後に最高スコアで
+      DetectedItem 作成。スキーマ変更 + 大規模ロジック改修
+    - 案 P-3 (誤マッチ元の個別除外強化): 広範キーワード (id=189 等) に
+      excludeKeywords を追加していく。実装小、keyword ごとの運用コスト増。
+      本セッションでは id=189 に Owen/Unbranded/Grown/Tee を追加済み
+    - 案 P-4 (opt-out リスト拡張): 上記 5 ペアの片方 (id=68/141/209/39/50 等) を
+      opt-out に追加。短期緩和、根治にはならない
+  - 決定事項: 案 P-1〜P-4 は今回スコープ外。次フェーズで方式決定 →
+    実装検討する。当面は attribution 誤差を許容する運用
 - テスト分離の根本対策 (2026-08-26 DetectedItems 消失インシデントを踏まえ)
   - 現状 (feat/telegram-inventory-alert): SKIP_DB_ALTER env + production
     プロセス自動検出の 2 段防御で「テスト時に本番 DB へ sync/alter しない」

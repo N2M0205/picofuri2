@@ -238,7 +238,7 @@ class ScrapingService {
 
       const mercariTasks = mercariKeywords.map(kw => async () => {
         const items = await this.mercariScraper.search(kw.keyword);
-        await this._processItems(items, kw, scanState, cap);
+        await this._processItems(items, kw, scanState, cap, tier);
         return items.length;
       });
 
@@ -249,7 +249,7 @@ class ScrapingService {
           const items = await this.yahooScraper.search(kw.keyword);
           // 並列レースで search 中に別ワーカーが429検出した場合の追加ガード
           if (scanState.yahooRateLimited) return 0;
-          await this._processItems(items, kw, scanState, cap);
+          await this._processItems(items, kw, scanState, cap, tier);
           return items.length;
         } catch (err) {
           if (err && err.name === 'YahooRateLimitError') {
@@ -283,7 +283,7 @@ class ScrapingService {
     }
   }
 
-  async _processItems(items, keyword, scanState, cap) {
+  async _processItems(items, keyword, scanState, cap, tier) {
     // 当該キーワードに紐づく CrossmallProduct を事前取得
     // n派生コード（末尾"n"、複数カタログ）にのみ売上が集約されているケースへの
     // 局所フォールバック: base 側 sales28=0 のとき n派生の sales/last* を採用する。
@@ -292,7 +292,11 @@ class ScrapingService {
 
     for (const item of items) {
       // 1. タイトルフィルタ（無関係な検索結果の事前足切り）
-      if (!this.filter.matchesKeyword(item.title, keyword.keyword)) {
+      //    tier=cold のときは先頭N tokenのみで判定 (2026-07-30 追加、表記ゆれ吸収)
+      //    ただし keywordId が opt-out リストに含まれる SKU 群 (N organic Vie 系等)
+      //    は attribution 問題回避のため and-full 維持 (2026-08-11 追加)
+      if (!this.filter.matchesKeyword(item.title, keyword.keyword,
+          { tier, keywordId: keyword.id })) {
         this.stats.filtered++;
         continue;
       }
