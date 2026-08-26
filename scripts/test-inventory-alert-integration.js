@@ -26,6 +26,10 @@
 process.env.SKIP_DB_ALTER = 'true';
 
 require('dotenv').config();
+
+// bot 切り替え作業中の暫定無効化フラグ (.env 経由で入ってくる) は
+// テスト内では明示的に打ち消す (runCheck / sendDailyDigest の実挙動を検証するため)
+delete process.env.INVENTORY_ALERT_DISABLED;
 const { Op } = require('sequelize');
 const {
   sequelize, Keyword, CrossmallProduct, CrossmallSale, InventoryAlertHistory,

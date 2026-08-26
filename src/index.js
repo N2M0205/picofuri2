@@ -96,6 +96,9 @@ async function main() {
   // ?t=<token> パラメータで .env の INVENTORY_ALERT_TOKEN と照合、一致で HTML 返却、不一致は 403
   // ダッシュボードは毎リクエストでフレッシュに evaluateAllSkus() → キャッシュなし
   app.get(inventoryAlertConfig.dashboard_path, async (req, res) => {
+    if (process.env.INVENTORY_ALERT_DISABLED === 'true') {
+      return res.status(503).type('text/plain').send('inventory alert temporarily disabled');
+    }
     const expected = process.env[inventoryAlertConfig.dashboard_token_env];
     const given = req.query.t;
     // constant-time compare 回避のため、単純比較で十分 (token は開発者管理・低頻度)
