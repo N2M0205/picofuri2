@@ -28,12 +28,23 @@ cat > "$HOOK_DIR/pre-commit" <<'HOOK_EOF'
 #!/usr/bin/env bash
 # ピコフリ2 pre-commit hook: main への直接コミットを拒否
 # 導入: scripts/install-git-hooks.sh から再導入可能
+#
+# 例外: merge 進行中 (.git/MERGE_HEAD 存在) の commit は許可する。
+#   衝突なしの merge は git 自身が pre-commit を発火せずに auto-commit するが、
+#   衝突解消後の手動 commit は pre-commit を発火するため、この分岐がないと
+#   owner 承認済みの merge が hook で止まる。
+#   参考: 2026-08-26 feat/matches-opt-out-list merge 時に踏み抜き、
+#         --no-verify で一時的に回避した経緯
 
 set -euo pipefail
 
 current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 
 if [ "$current_branch" = "main" ]; then
+  if [ -e ".git/MERGE_HEAD" ]; then
+    # merge 完了時の finalization commit は許可
+    exit 0
+  fi
   echo ""
   echo "❌ [pre-commit] mainへの直接コミットは禁止。ブランチを切ってください"
   echo ""
