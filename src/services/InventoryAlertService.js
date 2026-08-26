@@ -355,19 +355,20 @@ tbody tr:nth-child(odd){background:#fafafa}
 class InventoryAlertService {
   constructor(notificationSvc) {
     this.notification = notificationSvc || new NotificationService();
-    this.lastResults = null;      // 直近 evaluate 結果、ダッシュボード用にメモリキャッシュ
-    this.lastResultsAt = null;
+    // 2026-08-26 レビュー指摘反映: evaluateAllSkus のキャッシュは廃止。
+    //   理由: syncAll 間隔 (2h) より TTL が長いと、次の sync 完了データを見落として
+    //         古いキャッシュを返す可能性があり「データ鮮度担保」の設計意図と矛盾。
+    //         毎回 evaluateAllSkus(now) を直接呼び、DB の最新状態から都度計算する。
+    //         200SKU 規模なら 1 クエリ集計 + 純関数群で数百 ms 以下、キャッシュ不要。
   }
 
   /**
    * 判定 + 履歴更新 + 「新規 🔴 遷移」検知 → リアルタイム Telegram 送信。
-   * crossmall.syncAll() 完了直後に呼ばれる想定。
+   * crossmall.syncAll() 完了直後に呼ばれる想定。毎回フレッシュに評価する。
    */
   async runCheck({ suppressTelegram = false } = {}) {
     const now = new Date();
     const results = await evaluateAllSkus(now);
-    this.lastResults = results;
-    this.lastResultsAt = now;
 
     // 既存履歴を skuCode → row マップに
     const codes = results.map(r => r.skuCode);
@@ -427,15 +428,19 @@ class InventoryAlertService {
 
   /**
    * 8:00 日次ダイジェスト。1 メッセージにまとめて送信。
-   * 送信済み SKU の lastTelegramSentAt をまとめて更新 (以降 dedup ウィンドウ内の
-   * リアルタイム通知を抑止)。
+   * 送信直後、digest 本文に実際に名前が載った SKU (= 🔴 のみ) の
+   * lastTelegramSentAt を now に更新する。
+   *
+   * 2026-08-26 レビュー指摘反映:
+   *   旧実装は全 SKU (🔴🟡🟢) の lastTelegramSentAt を更新していたため、
+   *   digest 本文に名前が出ない 🟡 SKU が後に 🔴 遷移した場合に
+   *   dedup 判定でリアルタイム通知がスキップされる致命的バグがあった。
+   *   digest に実際に露出した SKU のみを「通知済み」扱いにする。
    */
   async sendDailyDigest() {
     const now = new Date();
-    const results = this.lastResults && this.lastResultsAt
-      && ((now.getTime() - this.lastResultsAt.getTime()) < 3 * 3600 * 1000)
-      ? this.lastResults
-      : await evaluateAllSkus(now);
+    // キャッシュ廃止 (レビュー指摘反映): 毎回フレッシュに再評価
+    const results = await evaluateAllSkus(now);
 
     const tunnelUrl = readEnvValue(config.tunnel_url_env);
     const msg = buildDailyDigestMessage(results, tunnelUrl, now);
@@ -446,18 +451,18 @@ class InventoryAlertService {
       return { sentCount: 0, error: e.message };
     }
 
-    // 全ての 🔴/🟡/🟢 SKU の lastTelegramSentAt を更新 (spec: 8:00 定時と同一 SKU の
-    // リアルタイム重複を防ぐ)
-    const codes = results.map(r => r.skuCode);
-    for (const code of codes) {
-      const existing = await InventoryAlertHistory.findByPk(code);
+    // 実際に digest 本文に名前が出た 🔴 SKU のみ lastTelegramSentAt を更新
+    // (🟡🟢 SKU は本文に登場しないので「通知済み」扱いにしない)
+    const notifiedSkus = results.filter(r => r.tier === 'red');
+    for (const r of notifiedSkus) {
+      const existing = await InventoryAlertHistory.findByPk(r.skuCode);
       if (existing) {
         await existing.update({ lastTelegramSentAt: now });
       }
     }
 
-    console.log(`[InventoryAlert] digest sent: 対象 ${results.length}SKU`);
-    return { sentCount: 1, resultsCount: results.length };
+    console.log(`[InventoryAlert] digest sent: 評価 ${results.length}SKU / 通知済み扱い ${notifiedSkus.length}SKU (🔴のみ)`);
+    return { sentCount: 1, resultsCount: results.length, notifiedRedCount: notifiedSkus.length };
   }
 }
 
