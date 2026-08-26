@@ -182,6 +182,19 @@
 - AI自動商品選定（長期ビジョン、全商品からAIが監視対象を自動選定）
 - 仕入推奨の完全自動化（長期ビジョン、「通知が来たら買うだけ」を目指す）
 - 商用サービス化（長期ビジョン）
+- pm2 プロセス監視/観測強化（2026-08-26 追加、優先度中・未着手）
+  - 契機: 2026-08-26 16:44 に原因不明の restart が 1 件発生。out.log/error.log
+    に crash / OOM の痕跡なし、max_memory_restart 発動なし、直前の DB backup
+    なし。別セッションからの手動 pm2 restart か shell 直接操作の可能性が高いが、
+    現行の pm2 ecosystem 設定では追跡できない
+  - 案 A: ecosystem.config.js に min_uptime + restart_delay を明示追加
+    (例: min_uptime='60s', restart_delay=5000)、あわせて max_restarts で
+    crash-loop を早期検知
+  - 案 B: pm2 own log (~/.pm2/pm2.log) を有効化・保存し、restart イベントの
+    出処 (pm2 CLI / API / 上位プロセス) を追跡可能にする
+  - 案 C: pm2 start/restart フックで audit ログを追記 (誰が・いつ・どこから)
+  - 優先度中: 実害はないが、原因不明 restart が再発した際の追跡手段が
+    現状 zero である点は保守性上の弱点
 
 ## ⏸ 保留中指示
 
