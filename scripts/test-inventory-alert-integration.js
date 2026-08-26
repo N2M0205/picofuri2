@@ -21,6 +21,10 @@
 
 'use strict';
 
+// 再発防止 (2026-08-26): テストスクリプトは本番 DB に対する sync/alter を実行しない
+// require('./src/models') 前に必ずセットすること
+process.env.SKIP_DB_ALTER = 'true';
+
 require('dotenv').config();
 const { Op } = require('sequelize');
 const {

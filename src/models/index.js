@@ -139,6 +139,47 @@ async function initDB() {
   await sequelize.query('PRAGMA journal_mode = WAL');
   await sequelize.query('PRAGMA busy_timeout = 5000');
 
+  // ==================== 再発防止 (2026-08-26 追加) ====================
+  // 分離起動 (PORT=3199 node src/index.js 等) が本番 DB に対して
+  // sync({alter:true}) を実行し、データコピー工程が silently 失敗するインシデント
+  // (2026-08-26 DetectedItems 17,788行→358行消失) を踏まえた 2 段防御。
+  //
+  // 案A: SKIP_DB_ALTER=true 環境変数で明示 opt-out
+  //   テストスクリプト等は先頭で process.env.SKIP_DB_ALTER='true' を必ず設定する
+  //
+  // 案B: 起動時に production process (pm2-picofuri2) の稼働を自動検出
+  //   別プロセスが port 3001 を使用中なら、alter 全スキップ + WARN
+  //   (フェールセーフ: 案A の設定忘れを catch する暗黙防御)
+  const skipAlterEnv = process.env.SKIP_DB_ALTER === 'true';
+  let productionProcessDetected = false;
+  try {
+    const { execSync } = require('child_process');
+    // ss -tlnp で port 3001 を listen しているプロセスがあるかチェック
+    // 自分自身の pid は除外 (自分が既に listen 開始した後の再起動ケース対応)
+    const out = execSync('ss -tlnpH sport = :3001 2>/dev/null || true', { encoding: 'utf-8' });
+    const selfPid = String(process.pid);
+    // 出力例: "LISTEN 0 511 *:3001 *:* users:((\"node\",pid=12345,fd=25))"
+    const pidMatches = [...out.matchAll(/pid=(\d+)/g)].map(m => m[1]);
+    const otherPids = pidMatches.filter(p => p !== selfPid);
+    if (otherPids.length > 0) {
+      productionProcessDetected = true;
+      console.warn(`[DB] production picofuri2 (pid=${otherPids.join(',')}) が port 3001 を使用中を検出`);
+    }
+  } catch (e) {
+    // ss コマンド不在等は静かに無視 (検出できない場合は skip しない = 既存挙動維持)
+  }
+
+  const shouldSkipAlter = skipAlterEnv || productionProcessDetected;
+  if (shouldSkipAlter) {
+    const reasons = [];
+    if (skipAlterEnv) reasons.push('SKIP_DB_ALTER=true');
+    if (productionProcessDetected) reasons.push('production process detected');
+    console.warn(`[DB] alter/sync 系全スキップ (理由: ${reasons.join(' + ')}) → 既存テーブルを読み取り前提で継続`);
+    console.log('[DB] 初期化完了 (skip mode)');
+    return;
+  }
+  // ==================== ここまで再発防止 ====================
+
   // CrossmallSale は alter:true で inline UNIQUE バグを再注入されるため、bulk syncから外して個別管理
   // Sequelize 6 + SQLite で indexes:[{unique:true, fields:['col1','col2']}] が
   // 各カラムに NOT NULL UNIQUE を inline 付与してしまう既知バグへの対策
