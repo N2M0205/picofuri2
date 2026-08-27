@@ -315,62 +315,40 @@ function readEnvValue(key) {
 }
 
 // ==================== Telegram メッセージ組み立て ====================
+// 2026-08-27 更新: Telegram 本文は「更新通知 + ダッシュボード URL のみ」の
+// 最小フォーマットに簡略化。SKU 詳細・件数・tier 内訳・鮮度警告は本文に
+// 含めず、全てダッシュボード側で確認する運用に変更。
 
-function formatSkuLine(r, includeQty) {
-  const nameSrc = r.itemName || r.skuName;
-  const name = nameSrc.length > 40 ? nameSrc.slice(0, 40) + '…' : nameSrc;
-  const days = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
-  const qtyPart = includeQty ? `　｜　推奨${r.recommendedQty}個` : '';
-  const freshPart = r.fresh ? '' : '　⚠️4h以上前のデータ';
-  return `${name}　｜　${days}${qtyPart}${freshPart}`;
+// "M/D(曜) H:mm" 形式 (例: 8/27(木) 8:00)。TZ は既存通り Asia/Tokyo を前提。
+function formatShortJst(now) {
+  const wd = ['日','月','火','水','木','金','土'][now.getDay()];
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `${now.getMonth() + 1}/${now.getDate()}(${wd}) ${now.getHours()}:${mm}`;
 }
 
+function _dashboardLinkLines(tunnelUrl) {
+  if (!tunnelUrl) return [];
+  const token = readEnvValue(config.dashboard_token_env);
+  const url = `${tunnelUrl}${config.dashboard_path}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
+  return ['', '▶️ 詳細はこちら', url];
+}
+
+// results は現在の本文には出さないが、呼び出し元互換のため引数として保持。
 function buildDailyDigestMessage(results, tunnelUrl, now = new Date()) {
-  const reds = results.filter(r => r.tier === 'red');
-  const yellows = results.filter(r => r.tier === 'yellow');
-  const greens = results.filter(r => r.tier === 'green');
-
-  const dateStr = `${now.getMonth() + 1}/${now.getDate()}`;
-  const weekday = ['日','月','火','水','木','金','土'][now.getDay()];
-  const timeStr = now.toTimeString().slice(0, 5);
-
-  const lines = [];
-  lines.push(`📦 在庫アラート — ${dateStr}(${weekday}) ${timeStr}`);
-  lines.push(`🔴 ${reds.length}件　｜　🟡 ${yellows.length}件　｜　🟢 ${greens.length}件`);
-  lines.push('');
-  if (reds.length === 0) {
-    lines.push('🔴 緊急該当なし');
-  } else {
-    lines.push('🔴 緊急（3日以内）');
-    for (const r of reds) lines.push(formatSkuLine(r, true));
-  }
-  if (tunnelUrl) {
-    const token = readEnvValue(config.dashboard_token_env);
-    const url = `${tunnelUrl}${config.dashboard_path}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
-    lines.push('');
-    lines.push('▶️ 全件の詳細はこちら');
-    lines.push(url);
-  }
-  return lines.join('\n');
+  return [
+    `📦 在庫アラートを更新しました（${formatShortJst(now)}）`,
+    '在庫補充、頑張ってください！',
+    ..._dashboardLinkLines(tunnelUrl),
+  ].join('\n');
 }
 
-function buildNewlyRedMessage(r, tunnelUrl) {
-  const lines = [];
-  lines.push('🚨 新たに緊急在庫（🔴）に該当');
-  lines.push('');
-  const name = r.itemName || r.skuName;
-  lines.push(name);
-  const daysStr = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
-  const freshPart = r.fresh ? '' : '　⚠️4h以上前のデータ';
-  lines.push(`${daysStr}　｜　推奨仕入${r.recommendedQty}個${freshPart}`);
-  if (tunnelUrl) {
-    const token = readEnvValue(config.dashboard_token_env);
-    const url = `${tunnelUrl}${config.dashboard_path}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
-    lines.push('');
-    lines.push('▶️ 全件の詳細はこちら');
-    lines.push(url);
-  }
-  return lines.join('\n');
+// r は現在の本文には出さないが、呼び出し元互換のため引数として保持。
+function buildNewlyRedMessage(r, tunnelUrl, now = new Date()) {
+  return [
+    `🚨 在庫アラートを更新しました（${formatShortJst(now)}）`,
+    '在庫補充、頑張ってください！',
+    ..._dashboardLinkLines(tunnelUrl),
+  ].join('\n');
 }
 
 // ==================== HTML ダッシュボード ====================
@@ -493,17 +471,19 @@ class InventoryAlertService {
       if (isNewlyRed && !sentRecently) newlyReds.push(r);
     }
 
-    // Telegram: 新規 🔴 を 1 件ずつ送信 (spec: 1 SKU=1 メッセージ)
+    // Telegram: 新規 🔴 を 1 通に集約して送信
+    //   2026-08-27 リンクのみ形式に伴い本文が SKU 非依存になったため、
+    //   複数 SKU 同時新規🔴 でも 1 通のみ送信 (通知の煩わしさ低減が趣旨)。
+    //   dedup 記録 (lastTelegramSentAt) は全 newlyReds に対して更新する
+    //   (1 通の集約通知で全 SKU が「通知済み」扱いになる)。
     let sentCount = 0;
-    if (!suppressTelegram) {
-      for (const r of newlyReds) {
-        try {
-          const msg = buildNewlyRedMessage(r, tunnelUrl);
-          await this.notification.sendTelegram(msg);
-          sentCount++;
-        } catch (e) {
-          console.error(`[InventoryAlert] realtime send err (${r.skuCode}): ${e.message}`);
-        }
+    if (!suppressTelegram && newlyReds.length > 0) {
+      try {
+        const msg = buildNewlyRedMessage(newlyReds[0], tunnelUrl, now);
+        await this.notification.sendTelegram(msg);
+        sentCount = 1;
+      } catch (e) {
+        console.error(`[InventoryAlert] realtime send err (batch of ${newlyReds.length} SKUs): ${e.message}`);
       }
     }
 

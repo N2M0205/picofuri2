@@ -9,8 +9,8 @@
 //   - calcRecommendedQty: (14+5) × 日販 − 現在庫、負値切り下げ、日販=0 は 0
 //   - isFresh: 4h 境界、null/未指定
 //   - isEligible: 対象/対象外の 6 パターン
-//   - buildDailyDigestMessage: 🔴 0件時のセクション省略
-//   - buildNewlyRedMessage: 鮮度注意付与
+//   - buildDailyDigestMessage: リンクのみ形式 (2026-08-27 簡略化)
+//   - buildNewlyRedMessage: リンクのみ形式 (2026-08-27 簡略化)
 //   - renderDashboardHtml: 3 セクション出力、escape
 
 'use strict';
@@ -106,45 +106,70 @@ assertEq(svc.isEligible({stock: 0}, 1), true, 'stock=0 かつ pace あり → �
 assertEq(svc.isEligible({stock: 10}, 0), false, 'stock>0 かつ pace=0 → 対象外');
 assertEq(svc.isEligible({stock: 10}, 1), true, '通常 SKU → 対象');
 
-console.log('\n[test-7] buildDailyDigestMessage');
+// 2026-08-27 リンクのみ形式に簡略化。本文は「更新通知 + ダッシュボード URL」
+// のみで、SKU 詳細・件数・tier・鮮度情報は本文に含まない。
+console.log('\n[test-7] buildDailyDigestMessage (リンクのみ形式)');
 const sample = [
   {skuCode: '001', skuName: 'A商品', itemName: 'A商品 詳細', tier: 'red', stock: 2, stockDays: 2, recommendedQty: 40, fresh: true},
   {skuCode: '002', skuName: 'B商品', itemName: 'B商品 詳細', tier: 'red', stock: 0, stockDays: 0, recommendedQty: 0, fresh: false},
   {skuCode: '003', skuName: 'C商品', itemName: 'C商品 詳細', tier: 'yellow', stock: 8, stockDays: 8, recommendedQty: 20, fresh: true},
   {skuCode: '004', skuName: 'D商品', itemName: 'D商品 詳細', tier: 'green', stock: 30, stockDays: 30, recommendedQty: 0, fresh: true},
 ];
-const digest = svc.buildDailyDigestMessage(sample, 'https://example.trycloudflare.com', new Date('2026-08-26T08:00:00+09:00'));
-assert(digest.includes('📦 在庫アラート'), 'ヘッダー含む');
-assert(digest.includes('🔴 2件'), 'サマリ 🔴 件数');
-assert(digest.includes('🟡 1件'), 'サマリ 🟡 件数');
-assert(digest.includes('🟢 1件'), 'サマリ 🟢 件数');
-assert(digest.includes('A商品 詳細'), '🔴 の商品名を含む');
-assert(digest.includes('残0日 (欠品)'), '欠品表記');
-assert(digest.includes('⚠️4h以上前'), '鮮度注意マーク');
-assert(!digest.includes('C商品'), '🟡 は本文に出さない');
-assert(!digest.includes('D商品'), '🟢 は本文に出さない');
+// タイムスタンプ検証用に minute=05 の時刻を使い、zero-pad を確認
+const t = new Date('2026-08-27T08:05:00+09:00');
+const digest = svc.buildDailyDigestMessage(sample, 'https://example.trycloudflare.com', t);
+assert(digest.includes('📦 在庫アラートを更新しました'), '定時ヘッダ (📦)');
+assert(digest.includes('（8/27(木) 8:05）'), '日時フォーマット (M/D(曜) H:mm、分は 2桁 zero-pad)');
+assert(digest.includes('在庫補充、頑張ってください！'), '応援メッセージ');
+assert(digest.includes('▶️ 詳細はこちら'), 'リンク導入行');
 assert(digest.includes('https://example.trycloudflare.com/inventory-alert'), 'tunnel URL 埋め込み');
+// 本文には SKU 情報を一切含まない
+assert(!digest.includes('A商品'), '本文に SKU 名を含まない');
+assert(!digest.includes('B商品'), '本文に SKU 名を含まない (欠品品も)');
+assert(!digest.includes('C商品'), '本文に SKU 名を含まない (🟡)');
+assert(!digest.includes('D商品'), '本文に SKU 名を含まない (🟢)');
+assert(!digest.includes('🔴'), '本文に tier 記号 🔴 を含まない');
+assert(!digest.includes('🟡'), '本文に tier 記号 🟡 を含まない');
+assert(!digest.includes('🟢'), '本文に tier 記号 🟢 を含まない');
+assert(!digest.includes('件'), '本文に件数を含まない');
+assert(!digest.includes('残0日'), '本文に在庫日数を含まない');
+assert(!digest.includes('⚠️'), '本文に鮮度警告を含まない');
+assert(!digest.includes('推奨'), '本文に推奨数を含まない');
 
-const digestEmpty = svc.buildDailyDigestMessage(
-  [{skuCode: 'x', skuName: 'X', itemName: 'X', tier: 'green', stock: 100, stockDays: 100, recommendedQty: 0, fresh: true}],
-  'https://example.trycloudflare.com',
-  new Date('2026-08-26T08:00:00+09:00')
-);
-assert(digestEmpty.includes('🔴 緊急該当なし'), '🔴 0件 → 「緊急該当なし」1行');
-assert(!digestEmpty.includes('🔴 緊急（3日以内）'), '🔴 0件時はセクションヘッダーごと省略');
+// 空 results (🔴 0件) でも同じ本文を送る (条件分岐なし)
+const digestEmpty = svc.buildDailyDigestMessage([], 'https://example.trycloudflare.com', t);
+assert(digestEmpty === digest, '結果件数によらず本文は同一 (条件分岐なし)');
 
-console.log('\n[test-8] buildNewlyRedMessage');
-const msg1 = svc.buildNewlyRedMessage(sample[0], 'https://example.trycloudflare.com');
-assert(msg1.includes('🚨 新たに緊急在庫'), 'リアルタイム見出し');
-assert(msg1.includes('A商品 詳細'), '商品名');
-assert(msg1.includes('残2日'), '在庫日数');
-assert(msg1.includes('推奨仕入40個'), '推奨数');
-assert(!msg1.includes('⚠️'), '鮮度 OK なら ⚠️ なし');
+// tunnel URL 不在時はリンク行 3 行 (空行 / 見出し / URL) が全て消える
+const digestNoUrl = svc.buildDailyDigestMessage(sample, null, t);
+assert(!digestNoUrl.includes('▶️'), 'tunnel URL 不在時はリンク導入行なし');
+assert(!digestNoUrl.includes('trycloudflare'), 'tunnel URL 不在時は URL なし');
+assert(digestNoUrl.includes('在庫補充、頑張ってください！'), 'tunnel URL 不在時も応援文はある');
 
-const msg2 = svc.buildNewlyRedMessage(sample[1], null);
-assert(msg2.includes('残0日 (欠品)'), '欠品表記');
-assert(msg2.includes('⚠️4h以上前'), '鮮度注意');
-assert(!msg2.includes('▶️'), 'tunnel URL 不在時はリンク行なし');
+console.log('\n[test-8] buildNewlyRedMessage (リンクのみ形式)');
+const msg1 = svc.buildNewlyRedMessage(sample[0], 'https://example.trycloudflare.com', t);
+assert(msg1.includes('🚨 在庫アラートを更新しました'), 'リアルタイム見出し (🚨)');
+assert(msg1.includes('（8/27(木) 8:05）'), 'リアルタイムも同じ日時フォーマット');
+assert(msg1.includes('在庫補充、頑張ってください！'), '応援メッセージ');
+assert(msg1.includes('▶️ 詳細はこちら'), 'リンク導入行');
+assert(msg1.includes('https://example.trycloudflare.com/inventory-alert'), 'tunnel URL 埋め込み');
+// 本文には SKU 情報を一切含まない
+assert(!msg1.includes('A商品'), '本文に SKU 名を含まない');
+assert(!msg1.includes('残2日'), '本文に在庫日数を含まない');
+assert(!msg1.includes('推奨'), '本文に推奨数を含まない');
+assert(!msg1.includes('⚠️'), '本文に鮮度警告を含まない');
+
+// r 引数によらず本文は同一 (SKU に依存しない)
+const msg2 = svc.buildNewlyRedMessage(sample[1], 'https://example.trycloudflare.com', t);
+assert(msg1 === msg2, '異なる SKU でも本文は同一 (SKU 非依存)');
+
+const msg3 = svc.buildNewlyRedMessage(sample[0], null, t);
+assert(!msg3.includes('▶️'), 'tunnel URL 不在時はリンク導入行なし');
+assert(!msg3.includes('trycloudflare'), 'tunnel URL 不在時は URL なし');
+
+// 定時 (📦) と リアルタイム (🚨) は見出し emoji で識別可能
+assert(digest.startsWith('📦'), '定時は 📦 で始まる');
+assert(msg1.startsWith('🚨'), 'リアルタイムは 🚨 で始まる');
 
 console.log('\n[test-9] renderDashboardHtml');
 const html = svc.renderDashboardHtml(sample, new Date('2026-08-26T08:00:00+09:00'));
