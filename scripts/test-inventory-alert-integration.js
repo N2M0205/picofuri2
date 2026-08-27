@@ -149,16 +149,21 @@ async function main() {
   assert(redFresh?.fresh === true, 'lastSyncedAt=now なので fresh=true');
 
   console.log('\n[test-2] runCheck: 初回全 SKU を新規🔴として検知');
+  // 2026-08-27 リンクのみ形式に伴い、メッセージは SKU 非依存になったため
+  // spy を SKU 名で filter して件数比較する検証は不可。代わりに
+  // r1.newlyReds (behavior) と spy1.sent.length (送信件数) を検証する。
   const spy1 = makeNotificationSpy();
   const svc = new InventoryAlertService(spy1);
   const r1 = await svc.runCheck();
   const testNewly1 = r1.newlyReds.filter(r => r.skuCode.startsWith(PREFIX));
   assert(testNewly1.length === 2, `テスト red SKU 2 件が新規検知 (実際: ${testNewly1.length})`);
-  const spySentTest1 = spy1.sent.filter(m => m.includes(PREFIX)
-    || m.includes('RED Fresh') || m.includes('RED OOS'));
-  assert(spySentTest1.length === 2, `Telegram spy に 2 メッセージ届く (実際: ${spySentTest1.length})`);
-  assert(spySentTest1.every(m => m.includes('🚨 新たに緊急在庫')),
-    'メッセージがリアルタイム見出しを含む');
+  assert(spy1.sent.length === r1.sentCount,
+    `Telegram spy 送信件数 = runCheck.sentCount (spy=${spy1.sent.length}, sentCount=${r1.sentCount})`);
+  // 2026-08-27 集約送信: 新規🔴 が複数でも 1 通のみ送信
+  assert(spy1.sent.length === 1,
+    `新規🔴 が複数でも Telegram は 1 通に集約 (実際: ${spy1.sent.length})`);
+  assert(spy1.sent.every(m => m.startsWith('🚨 在庫アラートを更新しました')),
+    '全メッセージがリアルタイム見出し (🚨) で始まる');
 
   console.log('\n[test-3] 履歴が正しく保存されている (lastTelegramSentAt は red のみ更新)');
   const hRedFresh = await InventoryAlertHistory.findByPk(T_SKU.red_fresh);
@@ -179,8 +184,10 @@ async function main() {
   const testNewly2 = r2.newlyReds.filter(r => r.skuCode.startsWith(PREFIX));
   assert(testNewly2.length === 0,
     `継続🔴 は「新規」でない (実際: ${testNewly2.length})`);
-  const spySentTest2 = spy2.sent.filter(m => m.includes('RED Fresh') || m.includes('RED OOS'));
-  assert(spySentTest2.length === 0, 'テスト red SKU への再送なし');
+  // SKU 非依存メッセージなのでテスト SKU 分の再送は「r2.newlyReds に含まれない」
+  // ことで代替検証
+  assert(!r2.newlyReds.some(r => r.skuCode.startsWith(PREFIX)),
+    'テスト red SKU が newlyReds に含まれない (=再送対象外)');
 
   console.log('\n[test-5] 🟡→🔴 遷移: 新規リアルタイム発火');
   // yellow SKU の stock を 10 → 2 に落として次回 runCheck で 🔴 遷移をシミュレート
@@ -190,19 +197,22 @@ async function main() {
   const r3 = await svc3.runCheck();
   const yellowNowRed = r3.newlyReds.find(r => r.skuCode === T_SKU.yellow);
   assert(!!yellowNowRed, 'yellow だった SKU が🔴 遷移で新規検知される');
-  const spySentTest3 = spy3.sent.filter(m => m.includes('YELLOW SKU'));
-  assert(spySentTest3.length === 1, 'yellow SKU のリアルタイム通知 1 件');
+  // SKU 非依存メッセージなので、送信が起きた事実を DB (lastTelegramSentAt)
+  // で検証する (メッセージ内容による判別は不可)
   const hYellowAfter = await InventoryAlertHistory.findByPk(T_SKU.yellow);
   assert(hYellowAfter.lastTelegramSentAt !== null,
-    'yellow→red 遷移で lastTelegramSentAt が設定される');
+    'yellow→red 遷移で lastTelegramSentAt が設定される (=送信された証跡)');
+  assert(spy3.sent.length >= 1,
+    `spy に少なくとも 1 件届く (実際: ${spy3.sent.length})`);
 
   console.log('\n[test-6] dedup: 12h 内既送信は再送しない (yellow→red のケース)');
   // 上の spy3 で 3.5 秒以内、明らかに 12h 未満なので dedup がかかる
   const spy4 = makeNotificationSpy();
   const svc4 = new InventoryAlertService(spy4);
   const r4 = await svc4.runCheck();
-  const spySentTest4 = spy4.sent.filter(m => m.includes('YELLOW SKU'));
-  assert(spySentTest4.length === 0, '前回送信から 12h 未満なので再送スキップ');
+  // SKU 非依存メッセージなので、対象 SKU の再送有無は newlyReds で判定
+  assert(!r4.newlyReds.some(r => r.skuCode === T_SKU.yellow),
+    '前回送信から 12h 未満の yellow SKU は newlyReds から除外される (dedup)');
 
   console.log('\n[test-7] sendDailyDigest: 🔴 のみ lastTelegramSentAt 更新');
   // 状態リセット: test-5 で yellow を red 化していたので 10 に戻し、履歴も yellow に
@@ -216,12 +226,16 @@ async function main() {
   const digestResult = await svc5.sendDailyDigest();
   assert(spy5.sent.length === 1, 'digest メッセージ 1 件送信');
   const digestMsg = spy5.sent[0];
-  assert(digestMsg.includes('📦 在庫アラート'), 'digest 見出し');
-  assert(digestMsg.includes('RED Fresh SKU'), 'digest 本文に red_fresh 名');
-  assert(digestMsg.includes('RED OOS SKU') || digestMsg.includes('残0日'),
-    'digest 本文に red_oos か 欠品表記');
-  assert(!digestMsg.includes('YELLOW SKU'), 'digest 本文に yellow は出さない');
-  assert(!digestMsg.includes('GREEN SKU'), 'digest 本文に green は出さない');
+  assert(digestMsg.startsWith('📦 在庫アラートを更新しました'), 'digest 見出し (📦)');
+  // リンクのみ形式なので、本文に SKU 名・tier 記号・件数を含まないことを確認
+  assert(!digestMsg.includes('RED Fresh SKU'), 'digest 本文に red_fresh 名を含まない');
+  assert(!digestMsg.includes('RED OOS SKU'), 'digest 本文に red_oos 名を含まない');
+  assert(!digestMsg.includes('YELLOW SKU'), 'digest 本文に yellow SKU 名を含まない');
+  assert(!digestMsg.includes('GREEN SKU'), 'digest 本文に green SKU 名を含まない');
+  assert(!digestMsg.includes('残0日'), 'digest 本文に在庫日数を含まない');
+  assert(!digestMsg.includes('🔴') && !digestMsg.includes('🟡') && !digestMsg.includes('🟢'),
+    'digest 本文に tier 記号を含まない');
+  assert(digestMsg.includes('在庫補充、頑張ってください！'), 'digest 本文に応援メッセージ');
 
   // 履歴更新確認: red は lastTelegramSentAt 設定、yellow/green は null 維持
   const hRedFresh2 = await InventoryAlertHistory.findByPk(T_SKU.red_fresh);
@@ -259,9 +273,12 @@ async function main() {
   const spy7 = makeNotificationSpy();
   const svc7 = new InventoryAlertService(spy7);
   const r7 = await svc7.runCheck();
-  const spySentTest7 = spy7.sent.filter(m => m.includes('YELLOW SKU'));
-  assert(spySentTest7.length === 1,
+  // SKU 非依存メッセージなので、対象 SKU の発火は newlyReds で判定
+  assert(r7.newlyReds.some(r => r.skuCode === T_SKU.yellow),
     '(レビュー修正 1 の効果) digest 直後の 🟡→🔴 遷移が正しくリアルタイム発火する');
+  const hYellowAfterR7 = await InventoryAlertHistory.findByPk(T_SKU.yellow);
+  assert(hYellowAfterR7.lastTelegramSentAt !== null,
+    'yellow SKU の lastTelegramSentAt が更新されている (=送信された証跡)');
 
   console.log('\n[test-9] sales1 の急伸検知 (加重平均で pace が上がる)');
   // green SKU に 今日 5 個の売上を追加 (定常 1/日 + spike 4) → sales1 = 6
