@@ -155,6 +155,26 @@ function isEligible(product, dailyPace) {
   return true;
 }
 
+/**
+ * アラート対象から除外すべき SKU か判定する。
+ *   - excluded_sku_codes: crossmallItemCode の完全一致
+ *   - excluded_name_keywords: CROSSMALL 商品名 (itemName) の部分文字列一致
+ * どちらか一方でも該当すれば除外。
+ * 除外はアラート (在庫日数評価・Telegram 通知) にのみ効く。
+ * Keyword.isActive とは独立、フリマ (メルカリ/Yahoo) 監視は継続する。
+ */
+function isExcludedForAlert(skuCode, itemName, cfg) {
+  const codes = Array.isArray(cfg?.excluded_sku_codes) ? cfg.excluded_sku_codes : [];
+  if (skuCode && codes.includes(skuCode)) return true;
+  const kws = Array.isArray(cfg?.excluded_name_keywords) ? cfg.excluded_name_keywords : [];
+  if (itemName && kws.length > 0) {
+    for (const kw of kws) {
+      if (kw && itemName.includes(kw)) return true;
+    }
+  }
+  return false;
+}
+
 // ==================== DB アクセス (テストは integration で) ====================
 
 /**
@@ -239,6 +259,11 @@ async function evaluateAllSkus(now = new Date()) {
   const results = [];
   for (const code of codes) {
     const product = productMap.get(code);
+    // アラート除外リスト (SKU コード完全一致 or 商品名部分一致) は
+    // isEligible より前で早期スキップ。Keyword.isActive には触れないので
+    // フリマ (メルカリ/Yahoo) 監視は継続する。
+    if (isExcludedForAlert(code, product?.itemName, config)) continue;
+
     const sales = salesMap.get(code) || { sales1: 0, sales7: 0, sales14: 0, sales28: 0 };
     // stock=0 の場合、日販ペース計算はスキップ (指示 v2)
     const stock = product?.stock ?? 0;
@@ -266,6 +291,8 @@ async function evaluateAllSkus(now = new Date()) {
       recommendedQty,
       sales,
       lastSyncedAt: product?.lastSyncedAt || null,
+      lastSalePrice: product?.lastSalePrice ?? null,
+      lastSaleDate: product?.lastSaleDate || null,
       fresh,
     });
   }
@@ -359,17 +386,29 @@ function renderDashboardHtml(results, generatedAt = new Date()) {
   const yellows = results.filter(r => r.tier === 'yellow');
   const greens = results.filter(r => r.tier === 'green');
 
+  const fmtPrice = (v) => (v != null && Number.isFinite(v) && v > 0)
+    ? `¥${Number(v).toLocaleString('ja-JP')}`
+    : '-';
+  const fmtDate = (v) => {
+    if (!v) return '-';
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return '-';
+    return d.toISOString().slice(0, 10);
+  };
+
   const renderRow = (r, includeQty) => {
     const name = r.itemName || r.skuName;
     const daysStr = r.stock === 0 ? '残0日 (欠品)' : `残${Math.round(r.stockDays)}日`;
     const qty = includeQty ? `<td class="qty">推奨${r.recommendedQty}個</td>` : '<td></td>';
     const fresh = r.fresh ? '' : '<span class="warn">⚠️4h以上前</span>';
-    return `<tr><td class="name">${escapeHtml(name)} ${fresh}</td><td class="days">${escapeHtml(daysStr)}</td>${qty}<td class="sku">${escapeHtml(r.skuCode)}</td></tr>`;
+    const priceCell = `<td class="price">${escapeHtml(fmtPrice(r.lastSalePrice))}</td>`;
+    const dateCell = `<td class="date">${escapeHtml(fmtDate(r.lastSaleDate))}</td>`;
+    return `<tr><td class="name">${escapeHtml(name)} ${fresh}</td><td class="days">${escapeHtml(daysStr)}</td>${qty}${priceCell}${dateCell}<td class="sku">${escapeHtml(r.skuCode)}</td></tr>`;
   };
 
   const section = (title, rows, includeQty) => {
     if (rows.length === 0) return `<h2>${title}（0件）</h2>`;
-    return `<h2>${title}（${rows.length}件）</h2><table><thead><tr><th>商品</th><th>在庫日数</th><th>推奨</th><th>SKU</th></tr></thead><tbody>${rows.map(r => renderRow(r, includeQty)).join('')}</tbody></table>`;
+    return `<h2>${title}（${rows.length}件）</h2><table><thead><tr><th>商品</th><th>在庫日数</th><th>推奨</th><th>直近販売価格</th><th>最終販売日</th><th>SKU</th></tr></thead><tbody>${rows.map(r => renderRow(r, includeQty)).join('')}</tbody></table>`;
   };
 
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>ピコフリ2 在庫アラート</title>
@@ -388,6 +427,8 @@ tbody tr:nth-child(odd){background:#fafafa}
 .warn{color:#e67e22;font-size:12px;margin-left:4px}
 .days{white-space:nowrap;font-weight:600}
 .qty{white-space:nowrap;color:#2c3e50}
+.price{white-space:nowrap;color:#2c3e50;text-align:right}
+.date{white-space:nowrap;color:#2c3e50;font-family:monospace;font-size:12px}
 .sku{font-family:monospace;font-size:12px;color:#7f8c8d}
 .summary{background:#ecf0f1;padding:10px 14px;border-radius:4px}
 </style></head><body>
@@ -540,6 +581,7 @@ module.exports = {
   calcRecommendedQty,
   isFresh,
   isEligible,
+  isExcludedForAlert,
   // 内部関数もテスト対象
   aggregateSalesForCodes,
   evaluateAllSkus,

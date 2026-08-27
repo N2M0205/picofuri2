@@ -18,12 +18,16 @@
   "dashboard_path": "/inventory-alert",
   "dashboard_token_env": "INVENTORY_ALERT_TOKEN",
   "tunnel_url_env": "PICOFURI_TUNNEL_URL",
+  "excluded_name_keywords": ["セット"],
+  "excluded_sku_codes": ["2314-0001163", "2314-000747"],
   "_notes": [
     "target_stock_days=14, lead_time_days=5 は指示書 v2 で確定 (「推奨仕入数 = 19 × 日販ペース - 現在庫」)。",
     "tier_thresholds.red_max_days=3 → 在庫日数 ≤ 3 が 🔴。yellow_max_days=13 → 4〜13 が 🟡、それ以外 (≥14) が 🟢。",
     "sales_weights の 4 値は合計 1.0 (0.15 + 0.30 + 0.25 + 0.30) にすること。実装で合計チェック済み。",
     "freshness_warn_hours=4 → lastSyncedAt から 4h 超過で ⚠️ データ鮮度注意を付与。同期間隔 2h × 2 = 4h という指示に基づく。",
     "realtime_dedup_hours=12 → 同一 SKU が 12h 内に既に Telegram 送信済みならリアルタイム再通知をスキップ。8:00 定時通知と同日中の重複を防ぐため。",
-    "digest_cron / digest_timezone は毎朝 8:00 JST 定時ダイジェスト。既存 daily-health-check (9:00) と同 pattern。"
+    "digest_cron / digest_timezone は毎朝 8:00 JST 定時ダイジェスト。既存 daily-health-check (9:00) と同 pattern。",
+    "excluded_name_keywords: CROSSMALL 商品名 (itemName) にこれらの部分文字列を含む SKU はアラート対象から除外。フリマ側 Keyword.isActive には影響しない (メルカリ/Yahoo 監視は継続)。",
+    "excluded_sku_codes: これらの crossmallItemCode に完全一致する SKU はアラート対象から除外。同じくフリマ監視には影響しない。"
   ]
 }
