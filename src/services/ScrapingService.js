@@ -228,8 +228,17 @@ class ScrapingService {
           console.log('[ScrapingService] YAHOO_SCRAPING_ENABLED=false: Yahoo!フリマスキャン全体をスキップ');
         }
       } else if (yahooAllowlist.length > 0) {
+        // 2026-08-31 fix (fix/yahoo-allowlist-or-syntax):
+        //   Keyword.keyword が OR 構文 (カンマ/パイプ区切り) の場合、
+        //   完全一致比較では allowlist と一致せず filter で漏れる。
+        //   FilterService.matchesKeyword と同じ分割正規表現 (/[,|｜]/) で
+        //   バリアントに分解し、いずれかが allowlist に一致すれば通す。
         const before = yahooKeywords.length;
-        yahooKeywords = yahooKeywords.filter(k => yahooAllowlist.includes(k.keyword));
+        yahooKeywords = yahooKeywords.filter(k =>
+          (k.keyword || '')
+            .split(/[,|｜]/)
+            .some(v => yahooAllowlist.includes(v.trim()))
+        );
         console.log(`[ScrapingService] YAHOO_KEYWORD_ALLOWLIST 適用: ${yahooKeywords.length}/${before}件に絞り込み (${yahooKeywords.map(k=>k.keyword).join(', ')})`);
       }
 
