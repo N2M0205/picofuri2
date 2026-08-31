@@ -122,20 +122,43 @@ class CrossmallService {
 
   // ===== 商品情報取得（get_item, item_name/cost_price/fixed_price）=====
   async getItemInfo(itemCodes) {
+    // 2026-08-31 診断ログ追加 (fix/crossmall-getitem-error-logging):
+    //   従来 catch/continue で silent に握りつぶしていた 3 経路
+    //     (a) API エラー応答 (GetStatus=error)
+    //     (b) 空 blocks (該当なし)
+    //     (c) 例外 (timeout, network 等)
+    //   に対して console.warn でエラー内容を出力する。
+    //   挙動・戻り値は変更なし (result への未追加も従来通り)。
     const result = {};
+    let apiErrCount = 0, emptyCount = 0, exceptionCount = 0;
     for (const code of itemCodes) {
       try {
         const xml = await this._request('get_item', { item_code: code });
-        if (this._hasApiError(xml)) continue;
+        if (this._hasApiError(xml)) {
+          const msg = this._parseXmlTag(xml, 'Message') || '(Message 抽出不可)';
+          console.warn(`[CrossmallService] getItemInfo(${code}) API エラー応答: ${msg}`);
+          apiErrCount++;
+          continue;
+        }
         const blocks = this._parseResults(xml);
-        if (blocks.length === 0) continue;
+        if (blocks.length === 0) {
+          console.warn(`[CrossmallService] getItemInfo(${code}) 該当なし (blocks=0)`);
+          emptyCount++;
+          continue;
+        }
         const b = blocks[0];
         const name = this._parseXmlTag(b, 'item_name');
         const purchasePrice = parseInt(this._parseXmlTag(b, 'cost_price')) || 0;
         const retailPrice = parseInt(this._parseXmlTag(b, 'fixed_price')) || 0;
         result[code] = { name, purchasePrice, retailPrice };
         await new Promise(r => setTimeout(r, 200));
-      } catch { /* 個別エラーはスキップ */ }
+      } catch (e) {
+        console.warn(`[CrossmallService] getItemInfo(${code}) 例外: ${e.message}`);
+        exceptionCount++;
+      }
+    }
+    if (apiErrCount + emptyCount + exceptionCount > 0) {
+      console.warn(`[CrossmallService] getItemInfo 完了サマリ: 成功=${Object.keys(result).length} APIエラー=${apiErrCount} 該当なし=${emptyCount} 例外=${exceptionCount} (対象=${itemCodes.length})`);
     }
     return result;
   }
