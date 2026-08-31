@@ -143,6 +143,79 @@ withMode('first-n-tokens', 4, () => {
     'B. N=4: 4tok目欠落で fail');
 });
 
+// OR 構文 (カンマ/パイプ区切り) の単体テスト
+// 2026-08-31 追加、feat/matches-keyword-or-syntax (案 B)
+console.log('\n[test-10] OR構文 カンマ区切り (基本)');
+delete process.env.MATCHES_KEYWORD_MODE;
+delete process.env.MATCHES_KEYWORD_FIRST_N;
+assert(filter.matchesKeyword('トイラボ 40ml', 'トイラボ,ToyLaBO') === true,
+  'A. バリアント1 (トイラボ) が title 一致 → pass');
+assert(filter.matchesKeyword('ToyLaBO 40ml', 'トイラボ,ToyLaBO') === true,
+  'B. バリアント2 (ToyLaBO) が title 一致 → pass');
+assert(filter.matchesKeyword('別商品 40ml', 'トイラボ,ToyLaBO') === false,
+  'C. どちらも title 不一致 → fail');
+assert(filter.matchesKeyword('トイラボ ToyLaBO', 'トイラボ,ToyLaBO') === true,
+  'D. 両方 title 一致でも OR は pass (any-of)');
+
+console.log('\n[test-11] OR構文 パイプ区切り (半角/全角)');
+assert(filter.matchesKeyword('トイラボ 40ml', 'トイラボ|ToyLaBO') === true,
+  'A. 半角パイプ、バリアント1 一致 → pass');
+assert(filter.matchesKeyword('ToyLaBO 40ml', 'トイラボ｜ToyLaBO') === true,
+  'B. 全角パイプ、バリアント2 一致 → pass');
+assert(filter.matchesKeyword('別商品', 'トイラボ｜ToyLaBO') === false,
+  'C. 全角パイプ、どちらも不一致 → fail');
+
+console.log('\n[test-12] OR構文 混合区切り (カンマ + パイプ)');
+assert(filter.matchesKeyword('kw2 商品', 'kw1,kw2|kw3') === true,
+  'A. カンマとパイプ混在、中央バリアント (kw2) 一致 → pass');
+assert(filter.matchesKeyword('kw4 商品', 'kw1|kw2,kw3｜kw4') === true,
+  'B. 3種の区切り (半角パイプ・カンマ・全角パイプ) 混在、末尾バリアント一致 → pass');
+assert(filter.matchesKeyword('kw5 商品', 'kw1|kw2,kw3｜kw4') === false,
+  'C. どのバリアントにも該当なし → fail');
+
+console.log('\n[test-13] OR構文 空バリアント/連続区切り');
+assert(filter.matchesKeyword('トイラボ 40ml', 'トイラボ,,ToyLaBO') === true,
+  'A. カンマ連続 (空バリアント混入)、非空バリアントで判定 → pass');
+assert(filter.matchesKeyword('トイラボ 40ml', 'トイラボ|') === true,
+  'B. 末尾パイプ (空バリアント末尾)、非空バリアント1つで判定 → pass');
+assert(filter.matchesKeyword('何かの商品', ',,,') === true,
+  'C. 区切り記号のみ (全バリアント空) → 空 keyword 扱いで matches all (現状維持)');
+assert(filter.matchesKeyword('何かの商品', '') === true,
+  'D. 空文字 → matches all (現状維持)');
+assert(filter.matchesKeyword('何かの商品', '  ,  |  ') === true,
+  'E. 空白+区切り記号のみ → matches all (trim 後 空バリアントのみ)');
+
+console.log('\n[test-14] 単一キーワード (区切りなし) の後方互換性');
+assert(filter.matchesKeyword('セノッピー 30粒 ブドウ味 2袋セット', 'セノッピー 30粒') === true,
+  'A. 従来の AND 動作 (test-1A と同じ) → pass');
+assert(filter.matchesKeyword('セノッピー ブドウ味 2袋セット', 'セノッピー 30粒 ブドウ味') === false,
+  'B. 従来の AND 動作 (test-1B と同じ) → fail');
+assert(filter.matchesKeyword('セノッピーチュアブル', 'セノッピー チュアブル') === true,
+  'C. 従来の phrase 一致 (test-1C と同じ) → pass');
+
+console.log('\n[test-15] OR構文 × first-n-tokens モード (各バリアント独立適用)');
+withMode('first-n-tokens', 3, () => {
+  // バリアント1: 4tok kw、3tok目 (ブドウ味) が title に欠落 → 単独 fail
+  // バリアント2: 2tok kw、両方一致 → 単独 pass
+  // .some() で pass 側が採用される
+  assert(filter.matchesKeyword(
+    'ToyLaBO 40ml 何か',
+    'セノッピー 30粒 ブドウ味 2袋セット,ToyLaBO 40ml'
+  ) === true, 'A. バリアント1 fail / バリアント2 pass → OR で pass');
+  assert(filter.matchesKeyword(
+    '別商品 40ml',
+    'セノッピー 30粒 ブドウ味 2袋セット,ToyLaBO 40ml'
+  ) === false, 'B. 両バリアント fail → OR も fail');
+});
+
+console.log('\n[test-16] OR構文 × STOP_WORDS (各バリアント内で機能語除外が働く)');
+withMode('and-full', undefined, () => {
+  assert(filter.matchesKeyword('risou coffee 30 何か', 'risou no Coffee 30|Green Tea') === true,
+    'A. バリアント1 側で STOP_WORD (no) 除外後 全 tok 一致 → pass');
+  assert(filter.matchesKeyword('Green Tea Latte', 'risou no Coffee 30|Green Tea') === true,
+    'B. バリアント2 (Green Tea) が一致 → pass');
+});
+
 console.log('\n=== 結果 ===');
 console.log(`passed=${passed}, failed=${failed}`);
 process.exit(failed === 0 ? 0 : 1);

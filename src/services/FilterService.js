@@ -8,6 +8,28 @@ const GLOBAL_EXCLUDE_KEYWORDS = ['空箱', 'サンプル'];
 class FilterService {
 
   // ========== タイトルフィルタ（検索結果の事前絞り込み）==========
+  // OR 構文対応 (2026-08-31 追加、feat/matches-keyword-or-syntax、案 B):
+  //   Keyword.keyword にカンマ (,) / パイプ (｜/|) 区切りでバリアントを
+  //   列挙可。いずれか 1 バリアントが _matchesKeywordSingle を通過すれば pass。
+  //   例: "トイラボ,ToyLaBO" → "トイラボ 40ml" または "ToyLaBO 40ml"
+  //       のいずれかにマッチ
+  //   区切りなしの単一 keyword は従来通り (バリアント 1 個扱いで同挙動)。
+  //   空バリアント (連続区切り) は無視。全て空の場合は「空 keyword」扱いで
+  //   matches all (従来の空 keyword 挙動を維持)。
+  matchesKeyword(title, keyword, opts = {}) {
+    const variants = (keyword || '')
+      .split(/[,|｜]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (variants.length === 0) {
+      // 空 keyword or 区切り記号のみ: 従来の空 keyword 挙動 (matches all)
+      return this._matchesKeywordSingle(title, '', opts);
+    }
+    return variants.some(v => this._matchesKeywordSingle(title, v, opts));
+  }
+
+  // 単一 keyword 判定 (旧 matchesKeyword 本体、OR 構文の各バリアント毎に呼ばれる)
+  //
   // 全角英数→半角 / 正規化 / AND判定 / フレーズ一致
   //
   // モード決定の優先順位:
@@ -29,7 +51,7 @@ class FilterService {
   //   短縮 (案A) の後もまだ弾かれ得るケースを救済するため、
   //   先頭N tokenのみを AND対象とし通過率を上げる。
   //   fallback のフレーズ一致は両モードで維持 (安全網)。
-  matchesKeyword(title, keyword, opts = {}) {
+  _matchesKeywordSingle(title, keyword, opts = {}) {
     const normalize = str => str
       .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
       .replace(/[+＋]/g, 'プラス')
