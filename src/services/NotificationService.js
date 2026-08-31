@@ -113,7 +113,14 @@ class NotificationService {
       ? `${new Date(lastSaleDate).getMonth() + 1}/${new Date(lastSaleDate).getDate()}`
       : '不明';
 
-    const stockDaysStr = stockDays === Infinity ? '∞' : `約${stockDays}日`;
+    // 2026-08-31 fix (fix/notification-null-product-stock-days):
+    //   product が null (crossmall 同期未完了・レコード不在) の場合、
+    //   calcStockDays は default 0 を渡された結果 stock===0 分岐で 0 を返し、
+    //   「約0日」と表示されてしまう。これは crossmallLine の
+    //   「📦 在庫情報なし」と矛盾するため、product=null 時は「不明」表示に統一。
+    const stockDaysStr = !product
+      ? '不明'
+      : (stockDays === Infinity ? '∞' : `約${stockDays}日`);
     const rarityLabel = this.calcRarity(item.listingCount);
 
     // 価格ライン
