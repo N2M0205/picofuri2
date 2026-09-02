@@ -108,6 +108,27 @@ const InventoryAlertHistory = sequelize.define('InventoryAlertHistory', {
   lastTelegramSentAt: { type: DataTypes.DATE, allowNull: true },
 });
 
+// ==================== 楽天 RMS 現在価格キャッシュ (2026-09-02 追加、feat/rakuten-price-honmachi) ====================
+// 本町店 (honmachi-store) の Rakuten Item API 2.0 から日次で取得した
+// 現在価格を SKU 単位に保持する。フォールバック用途で 3 日分のみ残す運用。
+// スキーマ変更を安全に扱うため、initDB() の一括 alter には含めない。
+// テーブル作成は scripts/fetch-rakuten-prices.js が sync() (CREATE IF NOT EXISTS)
+// で担う。
+const RakutenPrice = sequelize.define('RakutenPrice', {
+  crossmallItemCode: {
+    type: DataTypes.STRING,
+    primaryKey: true,
+  },
+  price: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+  },
+  fetchedAt: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+}, { timestamps: false });
+
 // 初期キーワードデータ
 const INITIAL_KEYWORDS = [
   { keyword: 'トイラボ',              platforms: ['mercari', 'yahoo_flea'] },
@@ -249,5 +270,6 @@ module.exports = {
   CrossmallProduct,
   CrossmallSale,
   InventoryAlertHistory,
+  RakutenPrice,
   initDB,
 };
