@@ -129,6 +129,28 @@ const RakutenPrice = sequelize.define('RakutenPrice', {
   },
 }, { timestamps: false });
 
+// ==================== 在庫マスタ原価キャッシュ (2026-09-02 追加、feat/cost-sheet-cache) ====================
+// Google Sheets「在庫マスタ」M 列 (原価) を picofuri2 が日次で取得し、
+// SKU 単位に共有 DB へキャッシュする。picofuri3 は本テーブルを read するだけ
+// で原価情報を得られる (Sheets API に直接アクセスしない)。RakutenPrice と
+// 同じ 3 日リテンションのフォールバック用途。initDB() の一括 alter には
+// 含めず、テーブル作成は scripts/fetch-cost-sheet.js が sync()
+// (CREATE IF NOT EXISTS) で担う。
+const CostSheetCache = sequelize.define('CostSheetCache', {
+  crossmallItemCode: {
+    type: DataTypes.STRING,
+    primaryKey: true,
+  },
+  cost: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+  },
+  fetchedAt: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+}, { timestamps: false });
+
 // 初期キーワードデータ
 const INITIAL_KEYWORDS = [
   { keyword: 'トイラボ',              platforms: ['mercari', 'yahoo_flea'] },
@@ -271,5 +293,6 @@ module.exports = {
   CrossmallSale,
   InventoryAlertHistory,
   RakutenPrice,
+  CostSheetCache,
   initDB,
 };
