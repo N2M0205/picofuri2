@@ -119,6 +119,19 @@ class FilterService {
       // Yahoo!フリマはlistedAt取得不可のためスキップしない
     }
 
+    // 4. 商品状態 (2026-09-02 追加): Mercari の itemConditionId が "1" (新品、
+    //    未使用) 以外なら NG。undefined / null / "" (Yahoo または取得不能) は
+    //    fail-open で通過させる (falsy 全般を「取得できず」として扱う)。
+    //    Phase1 で予定されつつ未実装だった 3 フィルタのうち、Mercari API 側で
+    //    構造化フィールドが取れる商品状態のみ今回実装。
+    //    詳細な決定経緯: docs/decisions/2026-09-02-three-filters-implementation.md
+    if (item.itemConditionId && item.itemConditionId !== '1') {
+      return {
+        pass: false,
+        reason: `商品状態 NG (itemConditionId="${item.itemConditionId}" / "1"=新品未使用 以外)`
+      };
+    }
+
     // 5. NG語句
     for (const word of ngWords) {
       if (title.includes(word.toLowerCase())) {

@@ -112,6 +112,10 @@ class MercariApiScraper {
           ? new Date(parseInt(item.created) * 1000)
           : null,
         status: item.status,
+        // 商品状態 ID (Mercari API: "1"=新品未使用 〜 "6"=全体的に状態が悪い)。
+        // FilterService.check の 商品状態フィルタで参照。取得不能時は undefined
+        // → fail-open (通過) となる。Yahoo scraper 側はこのフィールドを設定しない。
+        itemConditionId: item.itemConditionId,
         platform: 'mercari',
         listingCount: listingCount
       }));
