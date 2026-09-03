@@ -127,6 +127,14 @@ const RakutenPrice = sequelize.define('RakutenPrice', {
     type: DataTypes.DATE,
     allowNull: false,
   },
+  // 2026-09-03 追加 (feat/rakuten-price-imageurl):
+  // items/search レスポンスの images[0].location を絶対 URL 化して保存。
+  // CABINET 型の相対パスは https://image.rakuten.co.jp/<shop>/cabinet<location> で
+  // 絶対化。images 配列が空・欠落の SKU は null。
+  imageUrl: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
 }, { timestamps: false });
 
 // ==================== 在庫マスタ原価キャッシュ (2026-09-02 追加、feat/cost-sheet-cache) ====================

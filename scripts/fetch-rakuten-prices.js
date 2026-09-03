@@ -34,6 +34,7 @@ require('dotenv').config();
 const axios = require('axios');
 const { sequelize, Keyword, RakutenPrice } = require('../src/models');
 const { Op } = require('sequelize');
+const { extractPrice, extractImageUrl } = require('./lib/rakuten-price-lib');
 
 const RMS_BASE = 'https://api.rms.rakuten.co.jp/es/2.0';
 const HITS_PER_PAGE = 100; // 楽天 RMS 上限
@@ -41,6 +42,8 @@ const REQUEST_TIMEOUT_MS = 30000;
 const RETRY_ON_5XX = 2;
 const RETRY_DELAY_MS = 1500;
 const RETENTION_DAYS = 3;
+// 本町店 (honmachi-store) 固定。imageUrl 絶対化用の CABINET base path shopId。
+const SHOP_ID = 'honmachi-store';
 
 function authHeader() {
   const secret = process.env.RMS_SERVICE_SECRET_HONMACHI;
@@ -82,24 +85,8 @@ async function fetchPage(offset, auth) {
   throw lastErr;
 }
 
-function extractPrice(item) {
-  // items/search の item.variants から standardPrice を取得。
-  // 複数 variant がある場合は最小価格を採用 (フロア価格) — 監視の
-  // 「安値検出」用途としては最も保守的な値。
-  const variants = item && item.variants;
-  if (!variants || typeof variants !== 'object') return { price: null, variantCount: 0 };
-  const keys = Object.keys(variants);
-  if (keys.length === 0) return { price: null, variantCount: 0 };
-  const prices = [];
-  for (const k of keys) {
-    const raw = variants[k] && variants[k].standardPrice;
-    if (raw === undefined || raw === null || raw === '') continue;
-    const n = parseInt(String(raw).replace(/[,\s]/g, ''), 10);
-    if (Number.isFinite(n)) prices.push(n);
-  }
-  if (prices.length === 0) return { price: null, variantCount: keys.length };
-  return { price: Math.min(...prices), variantCount: keys.length };
-}
+// extractPrice / extractImageUrl は scripts/lib/rakuten-price-lib.js に集約
+// (require 済)。ここに定義しないことで、テスト可能な純粋関数として一元管理。
 
 async function fetchAllHonmachiItems(auth) {
   const startedAt = Date.now();
@@ -147,6 +134,15 @@ async function loadMonitoredCodes() {
 async function ensureTable() {
   // 独立テーブル、alter なしで CREATE IF NOT EXISTS のみ実行
   await RakutenPrice.sync();
+  // imageUrl 列を idempotent に追加 (feat/rakuten-price-imageurl で追加)。
+  // Sequelize の sync({alter:true}) は避け、対象列限定で直接 ALTER TABLE。
+  // 他テーブル・他列には一切影響しない。
+  const [cols] = await sequelize.query('PRAGMA table_info(RakutenPrices)');
+  const hasImageUrl = cols.some(c => c.name === 'imageUrl');
+  if (!hasImageUrl) {
+    await sequelize.query('ALTER TABLE RakutenPrices ADD COLUMN imageUrl VARCHAR(255)');
+    console.log('[DB] RakutenPrices に imageUrl 列を追加');
+  }
 }
 
 async function upsertPrices(matched) {
@@ -159,6 +155,7 @@ async function upsertPrices(matched) {
       await RakutenPrice.upsert({
         crossmallItemCode: row.crossmallItemCode,
         price: row.price,
+        imageUrl: row.imageUrl || null,
         fetchedAt: now,
       });
       ok++;
@@ -214,10 +211,12 @@ async function main() {
     console.warn(`[${ts()}] WARN: manageNumber 重複あり ${dupes.length} 件 (例: ${dupes.slice(0, 5).join(', ')})`);
   }
 
-  // INNER JOIN + 価格抽出
+  // INNER JOIN + 価格・imageUrl 抽出
   const matched = [];
   const missingPrice = [];
   const notInShop = [];
+  let imageUrlFilled = 0;
+  let imageUrlMissing = 0;
   for (const mn of monitored) {
     // 対応 item を検索
     const item = fetched.items.find(x => x && x.manageNumber === mn);
@@ -230,12 +229,16 @@ async function main() {
       missingPrice.push({ mn, variantCount });
       continue;
     }
-    matched.push({ crossmallItemCode: mn, price });
+    const imageUrl = extractImageUrl(item, SHOP_ID);
+    if (imageUrl) imageUrlFilled++;
+    else imageUrlMissing++;
+    matched.push({ crossmallItemCode: mn, price, imageUrl });
   }
 
   console.log(`[${ts()}] INNER JOIN: ${matched.length} SKU で価格取得成功`);
   console.log(`  ├ 店舗に未登録 (items/search に不在) : ${notInShop.length} 件`);
-  console.log(`  └ 店舗にはあるが standardPrice 抽出不可: ${missingPrice.length} 件`);
+  console.log(`  ├ 店舗にはあるが standardPrice 抽出不可: ${missingPrice.length} 件`);
+  console.log(`  └ imageUrl 埋め率: ${imageUrlFilled}/${matched.length} (未取得 ${imageUrlMissing} 件)`);
 
   // UPSERT
   const up = await upsertPrices(matched);
@@ -256,6 +259,7 @@ async function main() {
   console.log(`  取得成功 (UPSERT ok):     ${up.ok}`);
   console.log(`  店舗未登録:               ${notInShop.length}`);
   console.log(`  価格抽出不可:             ${missingPrice.length}`);
+  console.log(`  imageUrl 埋め:            ${imageUrlFilled} (未取得 ${imageUrlMissing})`);
   console.log(`  UPSERT 失敗:              ${up.failed}`);
   console.log(`  RakutenPrice 現在行数:    ${totalCount}`);
   console.log(`  API リクエスト数:         ${fetched.requestLog.length}`);
